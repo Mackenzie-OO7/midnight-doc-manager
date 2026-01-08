@@ -1,0 +1,73 @@
+{
+  "name": "midnight-doc-manager",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Privacy-preserving document management system on Midnight blockchain",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently \"npm run proof-server\" \"npm run watch\"",
+    "watch": "nodemon --config nodemon.json",
+    "setup": "npm run compile && npm run build && npm run deploy",
+    "compile": "./compactc-0.27/compactc contracts/document-manager.compact contracts/managed/document-manager",
+    "build": "tsc",
+    "deploy": "node dist/deploy.js",
+    "cli": "node dist/cli.js",
+    "check-balance": "npm run build && node dist/check-balance.js",
+    "health-check": "npm run build && node dist/health-check.js",
+    "reset": "rm -rf contracts/managed deployment.json dist && npm run compile",
+    "validate": "tsc --noEmit && npm run compile",
+    "clean": "rm -rf dist contracts/managed deployment.json",
+    "proof-server": "docker run -p 6300:6300 midnightnetwork/proof-server:6.1.0-alpha.6 -- midnight-proof-server --network preview",
+    "serve": "npx serve web -l 3000",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "0.11.0-rc.1",
+    "@midnight-ntwrk/ledger": "^4.0.0",
+    "@midnight-ntwrk/ledger-v6": "6.1.0-alpha.6",
+    "@midnight-ntwrk/midnight-js-contracts": "3.0.0-alpha.11",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "3.0.0-alpha.11",
+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "3.0.0-alpha.11",
+    "@midnight-ntwrk/midnight-js-level-private-state-provider": "3.0.0-alpha.11",
+    "@midnight-ntwrk/midnight-js-network-id": "3.0.0-alpha.11",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "3.0.0-alpha.11",
+    "@midnight-ntwrk/midnight-js-types": "3.0.0-alpha.11",
+    "@midnight-ntwrk/midnight-js-utils": "3.0.0-alpha.11",
+    "@midnight-ntwrk/onchain-runtime-v1": "1.0.0-alpha.5",
+    "@midnight-ntwrk/wallet": "^5.0.0",
+    "@midnight-ntwrk/wallet-sdk-abstractions": "1.0.0-beta.9",
+    "@midnight-ntwrk/wallet-sdk-dust-wallet": "1.0.0-beta.10",
+    "@midnight-ntwrk/wallet-sdk-facade": "1.0.0-beta.12",
+    "@midnight-ntwrk/wallet-sdk-hd": "3.0.0-beta.7",
+    "@midnight-ntwrk/wallet-sdk-shielded": "1.0.0-beta.11",
+    "@midnight-ntwrk/wallet-sdk-unshielded-wallet": "1.0.0-beta.13",
+    "arweave": "^1.15.5",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.3.1",
+    "pinata": "^1.6.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.4.0",
+    "@types/ws": "^8.5.10",
+    "concurrently": "^8.2.0",
+    "nodemon": "^3.0.1",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "midnight",
+    "blockchain",
+    "zero-knowledge",
+    "privacy",
+    "document-management",
+    "ipfs",
+    "arweave"
+  ]
+}

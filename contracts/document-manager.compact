@@ -1,0 +1,173 @@
+// Document Manager Contract
+
+pragma language_version >= 0.16;
+
+import CompactStandardLibrary;
+
+// Document record stored on-chain
+struct DocumentRecord {
+    contentHash: Bytes<32>,
+    storageCid: Opaque<"string">,
+    ownerCommitment: Bytes<32>,
+    fileType: Opaque<"string">,
+    isActive: Boolean
+}
+
+// Access grant record stored with composite key
+struct AccessGrant {
+    encryptedKey: Opaque<"string">,
+    nonce: Opaque<"string">,
+    senderPublicKey: Opaque<"string">
+}
+
+// Ledger State
+
+// Map from document ID to document record
+export ledger documents: Map<Bytes<32>, DocumentRecord>;
+
+// Access grants using composite key: hash(documentId || recipientCommitment)
+export ledger accessGrants: Map<Bytes<32>, AccessGrant>;
+
+// Total count of documents
+export ledger documentCount: Counter;
+
+// Witness Function
+
+witness secretKey(): Bytes<32>;
+
+// Helper Circuit
+// Compute composite key for access grant storage
+export circuit computeGrantKey(
+    documentId: Bytes<32>,
+    recipientCommitment: Bytes<32>
+): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([documentId, recipientCommitment]);
+}
+
+// Document Management Circuits
+
+// Register a new document
+export circuit registerDocument(
+    documentId: Bytes<32>,
+    contentHash: Bytes<32>,
+    storageCid: Opaque<"string">,
+    ownerCommitment: Bytes<32>,
+    fileType: Opaque<"string">
+): [] {
+    documents.insert(disclose(documentId), DocumentRecord {
+        contentHash: disclose(contentHash),
+        storageCid: disclose(storageCid),
+        ownerCommitment: disclose(ownerCommitment),
+        fileType: disclose(fileType),
+        isActive: true
+    });
+    documentCount.increment(1);
+}
+
+// Verify a document's content hash
+export circuit verifyDocument(
+    documentId: Bytes<32>,
+    providedHash: Bytes<32>
+): Boolean {
+    const doc = documents.lookup(disclose(documentId));
+    return doc.contentHash == disclose(providedHash) && doc.isActive;
+}
+
+// Update a document (only owner)
+export circuit updateDocument(
+    documentId: Bytes<32>,
+    newContentHash: Bytes<32>,
+    newStorageCid: Opaque<"string">
+): [] {
+    const doc = documents.lookup(disclose(documentId));
+    
+    assert(persistentHash<Bytes<32>>(secretKey()) == doc.ownerCommitment, 
+           "Not authorized");
+    assert(doc.isActive, "Document deleted");
+    
+    documents.insert(disclose(documentId), DocumentRecord {
+        contentHash: disclose(newContentHash),
+        storageCid: disclose(newStorageCid),
+        ownerCommitment: doc.ownerCommitment,
+        fileType: doc.fileType,
+        isActive: true
+    });
+}
+
+// Deactivate a document (soft delete. only owner)
+export circuit deactivateDocument(documentId: Bytes<32>): [] {
+    const doc = documents.lookup(disclose(documentId));
+    
+    assert(persistentHash<Bytes<32>>(secretKey()) == doc.ownerCommitment,
+           "Not authorized");
+    
+    documents.insert(disclose(documentId), DocumentRecord {
+        contentHash: doc.contentHash,
+        storageCid: doc.storageCid,
+        ownerCommitment: doc.ownerCommitment,
+        fileType: doc.fileType,
+        isActive: false
+    });
+}
+
+// Access Control Circuits
+
+// Grant access to a document (only owner)
+export circuit grantAccess(
+    documentId: Bytes<32>,
+    recipientCommitment: Bytes<32>,
+    encryptedKey: Opaque<"string">,
+    nonce: Opaque<"string">,
+    senderPublicKey: Opaque<"string">
+): [] {
+    const doc = documents.lookup(disclose(documentId));
+    
+    assert(persistentHash<Bytes<32>>(secretKey()) == doc.ownerCommitment,
+           "Not authorized");
+    assert(doc.isActive, "Document deleted");
+    
+    // Store with composite key
+    const grantKey = computeGrantKey(disclose(documentId), disclose(recipientCommitment));
+    accessGrants.insert(grantKey, AccessGrant {
+        encryptedKey: disclose(encryptedKey),
+        nonce: disclose(nonce),
+        senderPublicKey: disclose(senderPublicKey)
+    });
+}
+
+// Revoke access ( only owner)
+export circuit revokeAccess(
+    documentId: Bytes<32>,
+    recipientCommitment: Bytes<32>
+): [] {
+    const doc = documents.lookup(disclose(documentId));
+    
+    assert(persistentHash<Bytes<32>>(secretKey()) == doc.ownerCommitment,
+           "Not authorized");
+    
+    const grantKey = computeGrantKey(disclose(documentId), disclose(recipientCommitment));
+    accessGrants.remove(grantKey);
+}
+
+// Check if access grant exists
+export circuit hasAccess(
+    documentId: Bytes<32>,
+    recipientCommitment: Bytes<32>
+): Boolean {
+    const grantKey = computeGrantKey(disclose(documentId), disclose(recipientCommitment));
+    return accessGrants.member(grantKey);
+}
+
+// Get access grant (for authorized recipient to retrieve wrapped key)
+export circuit getAccessGrant(
+    documentId: Bytes<32>,
+    recipientCommitment: Bytes<32>
+): AccessGrant {
+    const grantKey = computeGrantKey(disclose(documentId), disclose(recipientCommitment));
+    return accessGrants.lookup(grantKey);
+}
+
+// Get document record
+export circuit getDocument(documentId: Bytes<32>): DocumentRecord {
+    return documents.lookup(disclose(documentId));
+}

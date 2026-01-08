@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Midnight Document Manager</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Document Manager</h1>
+        </header>
+
+        <main>
+            <!-- Connection Section -->
+            <section class="card" id="wallet-section">
+                <h2>Wallet Connection</h2>
+                <div id="wallet-status" class="status disconnected">
+                    <span class="status-dot"></span>
+                    <span>Not Connected</span>
+                </div>
+                <button id="connect-btn" class="btn primary">Connect Wallet</button>
+                <div id="wallet-info" class="hidden">
+                    <p><strong>Address:</strong> <span id="wallet-address">-</span></p>
+                    <p><strong>Balance:</strong> <span id="wallet-balance">-</span> DUST</p>
+                </div>
+            </section>
+
+            <!-- Upload Section -->
+            <section class="card" id="upload-section">
+                <h2>Upload Document</h2>
+                <div class="upload-area" id="drop-zone">
+                    <div class="upload-icon">📄</div>
+                    <p>Drag & drop a file here or click to browse</p>
+                    <input type="file" id="file-input" hidden>
+                </div>
+                <div id="file-info" class="hidden">
+                    <p><strong>File:</strong> <span id="file-name">-</span></p>
+                    <p><strong>Size:</strong> <span id="file-size">-</span></p>
+                </div>
+                <button id="upload-btn" class="btn primary" disabled>Encrypt & Upload</button>
+                <div id="upload-progress" class="hidden">
+                    <div class="progress-bar">
+                        <div class="progress-fill"></div>
+                    </div>
+                    <p class="progress-text">Uploading...</p>
+                </div>
+            </section>
+
+            <!-- Documents Section -->
+            <section class="card" id="documents-section">
+                <h2>My Documents</h2>
+                <div id="documents-list">
+                    <p class="empty-state">No documents yet. Upload your first one!</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
