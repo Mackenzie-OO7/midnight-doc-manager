@@ -9,7 +9,7 @@
     "dev": "concurrently \"npm run proof-server\" \"npm run watch\"",
     "watch": "nodemon --config nodemon.json",
     "setup": "npm run compile && npm run build && npm run deploy",
-    "compile": "./compactc-0.27/compactc contracts/document-manager.compact contracts/managed/document-manager",
+    "compile": "compact compile contracts/document-manager.compact contracts/managed/document-manager",
     "build": "tsc",
     "deploy": "node dist/deploy.js",
     "cli": "node dist/cli.js",

@@ -1,14 +1,14 @@
 # Midnight Document Manager
 
-A privacy-preserving document management system built on the Midnight Network. Encrypts files client-side, stores them on IPFS, and uses Midnight's shielded state for access control and to verufy integrity.
+A privacy-preserving document management system built on the Midnight Network. Encrypts files client-side, stores them on IPFS, and uses Midnight's shielded state for access control and to verify integrity.
 
 ## Prerequisites
 
 - Node.js 22+
 - Docker (for proof server)
-- [Lace Wallet](https://lace.io) with Midnight Preview extension
+- [Lace Wallet Extension](https://chromewebstore.google.com/detail/lace-beta/hgeekaiplokcnmakghbdfbgnlfheichg)
 - Pinata account (for IPFS) - [Get free API key](https://app.pinata.cloud)
-- [Compact Compiler](https://github.com/midnightntwrk/compact/tree/main/prerelease)
+- [Compact Compiler](https://docs.midnight.network/getting-started/installation#install-compact)
 
 ## Quick Start
 
@@ -20,8 +20,12 @@ A privacy-preserving document management system built on the Midnight Network. E
 2. **Configure environment**:
    ```bash
    cp .env.example .env
-   # Edit .env with your WALLET_SEED and PINATA_JWT
    ```
+   
+   Edit `.env` with your credentials:
+   - **WALLET_SEED**: Generate a 64-character hex seed with `openssl rand -hex 32`
+   - **PINATA_JWT**: Get from [Pinata Dashboard](https://app.pinata.cloud) → Developer → API Keys → New Key → Copy JWT
+   - **PINATA_GATEWAY**: Your Pinata gateway URL (e.g., `https://gateway.pinata.cloud`)
 
 3. **Compile the contract**:
    ```bash
@@ -34,6 +38,9 @@ A privacy-preserving document management system built on the Midnight Network. E
    ```
 
 5. **Start the proof server** (in a separate terminal):
+   
+   > **Note**: Ensure Docker Desktop is running before executing this command.
+   
    ```bash
    npm run proof-server
    ```
@@ -46,10 +53,11 @@ A privacy-preserving document management system built on the Midnight Network. E
 ## CLI Commands
 
 ```bash
-# Generate a keypair
+# Generate a keypair for encryption and sharing
+# This creates an X25519 keypair used to encrypt/decrypt shared document keys
 npm run cli -- keys generate
 
-# Upload a document
+# Upload a document (you must deploy the contract first with `npm run deploy`)
 npm run cli -- upload ./myfile.pdf
 
 # List your documents
