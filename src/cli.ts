@@ -108,6 +108,20 @@ keys.command("show")
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
 
+keys.command("address")
+  .description("Show your wallet address (requires network connection)")
+  .action(async () => {
+    try {
+      console.log(chalk.blue("\n🔍 Getting wallet address...\n"));
+      const contract = createDocumentManager();
+      const address = await contract.connect();
+      console.log(chalk.cyan("Your wallet address:"));
+      console.log(address);
+      console.log("");
+      await contract.close();
+    } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
+  });
+
 // Deploy
 
 program.command("deploy")

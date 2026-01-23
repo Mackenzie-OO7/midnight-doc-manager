@@ -6,7 +6,6 @@ A privacy-preserving document management system built on the Midnight Network. E
 
 - Node.js 22+
 - Docker (for proof server)
-- [Lace Wallet Extension](https://chromewebstore.google.com/detail/lace-beta/hgeekaiplokcnmakghbdfbgnlfheichg)
 - Pinata account (for IPFS) - [Get free API key](https://app.pinata.cloud)
 - [Compact Compiler](https://docs.midnight.network/getting-started/installation#install-compact)
 
@@ -22,7 +21,7 @@ A privacy-preserving document management system built on the Midnight Network. E
    cp .env.example .env
    ```
    
-   **Generate a wallet seed:**
+   **Generate a development wallet seed:**
    ```bash
    openssl rand -hex 32
    ```
@@ -34,17 +33,17 @@ A privacy-preserving document management system built on the Midnight Network. E
    - **PINATA_JWT**: Get from [Pinata Dashboard](https://app.pinata.cloud) → Developer → API Keys → New Key → Copy JWT
    - **PINATA_GATEWAY**: Use `https://gateway.pinata.cloud/ipfs`
    
-   > **Important**: The wallet seed in `.env` must match the wallet you fund in step 5.
-
 3. **Compile the contract**:
    ```bash
    npm run compile
    ```
 
-4. **Build Project**:
+4. **Build and get your wallet address**:
    ```bash
    npm run build
+   npm run check-balance
    ```
+   Copy the wallet address shown in the output, you'll need it to fund your wallet.
 
 5. **Start the local network** (in a separate terminal):
 
@@ -64,21 +63,16 @@ A privacy-preserving document management system built on the Midnight Network. E
    docker ps  # All containers should show "healthy" status
    ```
 
-   **Get your wallet address:**
-
-   1. Open **Lace Midnight Preview** wallet extension
-   2. Go to **Settings** → Switch network to **"Undeployed"**
-   3. Copy your **shielded wallet address**
-
-   **Fund your wallet:**
+   **Fund your wallet** (use the address from step 4):
 
    ```bash
    yarn fund <YOUR_WALLET_ADDRESS>
    ```
 
-6. **Return to project and deploy**
+6. **Deploy**:
 
    ```bash
+   # Return to the midnight-doc-manager directory
    cd ../midnight-doc-manager
    npm run deploy
    ```
@@ -92,9 +86,10 @@ A privacy-preserving document management system built on the Midnight Network. E
 
 ## CLI Commands
 
-> **Important**: You must deploy the contract first (see step 5 above) before using these commands.
-
 ```bash
+# Check your wallet address and balance
+npm run check-balance
+
 # Generate a keypair for encryption and sharing
 # This creates an X25519 keypair used to encrypt/decrypt shared document keys
 npm run cli -- keys generate
@@ -119,7 +114,7 @@ npm run cli -- share grant <docId> <recipientPublicKey>
 
 | Script | Description |
 |--------|-------------|
-| `npm run setup` | **Compile, build, and deploy** (all-in-one) |
+| `npm run setup` | Compile, build, and deploy |
 | `npm run compile` | Compile Compact contract |
 | `npm run build` | Build TypeScript to JavaScript |
 | `npm run deploy` | Deploy contract to network |
@@ -131,7 +126,6 @@ npm run cli -- share grant <docId> <recipientPublicKey>
 | `npm run clean` | Clean build output |
 
 ## Environment Variables
-
 | Variable | Description |
 |----------|-------------|
 | `WALLET_SEED` | 64-character hex wallet seed |
