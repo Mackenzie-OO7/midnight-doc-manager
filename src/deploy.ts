@@ -54,6 +54,12 @@ async function main() {
         const walletModule = await import("@midnight-ntwrk/wallet");
         const { WalletBuilder } = walletModule;
 
+        // Determine the correct network ID based on MIDNIGHT_NETWORK
+        const networkType = process.env.MIDNIGHT_NETWORK || "preview";
+        const zswapNetworkId = networkType === "undeployed"
+            ? ZswapNetworkId.Undeployed
+            : ZswapNetworkId.TestNet;
+
         // Build wallet from seed
         const wallet = await WalletBuilder.buildFromSeed(
             networkConfig.indexer,
@@ -61,7 +67,7 @@ async function main() {
             networkConfig.proofServer,
             networkConfig.node,
             walletSeed,
-            ZswapNetworkId.TestNet,
+            zswapNetworkId,
             "info"
         );
 

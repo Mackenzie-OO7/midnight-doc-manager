@@ -17,47 +17,89 @@ A privacy-preserving document management system built on the Midnight Network. E
    npm install
    ```
 
-2. **Configure environment**:
+2. **Configure environment and wallet**:
    ```bash
    cp .env.example .env
    ```
    
-   Edit `.env` with your credentials:
-   - **WALLET_SEED**: Generate a 64-character hex seed with `openssl rand -hex 32`
+   **Generate a wallet seed:**
+   ```bash
+   openssl rand -hex 32
+   ```
+   Copy the output (64-character hex string).
+   
+   Edit `.env` and configure:
+   - **WALLET_SEED**: Paste the generated seed
+   - **MIDNIGHT_NETWORK**: Set to `undeployed` for local development
    - **PINATA_JWT**: Get from [Pinata Dashboard](https://app.pinata.cloud) → Developer → API Keys → New Key → Copy JWT
-   - **PINATA_GATEWAY**: Your Pinata gateway URL (e.g., `https://gateway.pinata.cloud`)
+   - **PINATA_GATEWAY**: Use `https://gateway.pinata.cloud/ipfs`
+   
+   > **Important**: The wallet seed in `.env` must match the wallet you fund in step 5.
 
 3. **Compile the contract**:
    ```bash
    npm run compile
    ```
 
-4. **Build TypeScript**:
+4. **Build Project**:
    ```bash
    npm run build
    ```
 
-5. **Start the proof server** (in a separate terminal):
-   
-   > **Note**: Ensure Docker Desktop is running before executing this command.
-   
+5. **Start the local network** (in a separate terminal):
+
+   Before deploying, you must set up a local Midnight network and fund your wallet.
+
    ```bash
-   npm run proof-server
+   # In a separate terminal
+   git clone https://github.com/bricktowers/midnight-local-network.git
+   cd midnight-local-network
+   yarn install
+   docker compose up -d
    ```
 
-6. **Use the CLI**:
+   **Wait for containers to be healthy:**
+
    ```bash
-   npm run cli -- --help
+   docker ps  # All containers should show "healthy" status
    ```
+
+   **Get your wallet address:**
+
+   1. Open **Lace Midnight Preview** wallet extension
+   2. Go to **Settings** → Switch network to **"Undeployed"**
+   3. Copy your **shielded wallet address**
+
+   **Fund your wallet:**
+
+   ```bash
+   yarn fund <YOUR_WALLET_ADDRESS>
+   ```
+
+6. **Return to project and deploy**
+
+   ```bash
+   cd ../midnight-doc-manager
+   npm run deploy
+   ```
+
+   > **Troubleshooting**: If deployment times out, verify:
+   > - Docker containers are running and healthy: `docker ps`
+   > - Your `.env` has `MIDNIGHT_NETWORK=undeployed`
+   > - The wallet address you funded matches your `WALLET_SEED`
+
+   > **Tip**: You can run all setup steps at once with `npm run setup` (compiles, builds, and deploys)
 
 ## CLI Commands
+
+> **Important**: You must deploy the contract first (see step 5 above) before using these commands.
 
 ```bash
 # Generate a keypair for encryption and sharing
 # This creates an X25519 keypair used to encrypt/decrypt shared document keys
 npm run cli -- keys generate
 
-# Upload a document (you must deploy the contract first with `npm run deploy`)
+# Upload a document
 npm run cli -- upload ./myfile.pdf
 
 # List your documents
@@ -77,8 +119,10 @@ npm run cli -- share grant <docId> <recipientPublicKey>
 
 | Script | Description |
 |--------|-------------|
+| `npm run setup` | **Compile, build, and deploy** (all-in-one) |
 | `npm run compile` | Compile Compact contract |
 | `npm run build` | Build TypeScript to JavaScript |
+| `npm run deploy` | Deploy contract to network |
 | `npm run cli` | Run the CLI application |
 | `npm run proof-server` | Start local proof server (Docker) |
 | `npm run serve` | Serve web frontend on port 3000 |
@@ -87,8 +131,6 @@ npm run cli -- share grant <docId> <recipientPublicKey>
 | `npm run clean` | Clean build output |
 
 ## Environment Variables
-
-Copy `.env.example` to `.env` and configure:
 
 | Variable | Description |
 |----------|-------------|
