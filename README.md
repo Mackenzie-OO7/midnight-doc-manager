@@ -135,7 +135,6 @@ npm run cli -- share revoke <docId> <recipientPublicKey> "your mnemonic phrase"
 | `STORAGE_PASSWORD` | Password for encrypted private state |
 | `PINATA_JWT` | Your Pinata API JWT token |
 | `PINATA_GATEWAY` | IPFS gateway URL |
-| `WALLET_SEED` | Your 12/24 word mnemonic phrase |
 
 ## Project Structure
 
