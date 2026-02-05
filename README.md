@@ -16,79 +16,67 @@ A privacy-preserving document management system built on the Midnight Network. E
    npm install
    ```
 
-2. **Configure environment and wallet**:
+2. **Configure environment**:
    ```bash
    cp .env.example .env
    ```
    
-   **Generate a development wallet seed:**
-   ```bash
-   openssl rand -hex 32
-   ```
-   Copy the output (64-character hex string).
-   
    Edit `.env` and configure:
-   - **WALLET_SEED**: Paste the generated seed
    - **MIDNIGHT_NETWORK**: Set to `undeployed` for local development
    - **PINATA_JWT**: Get from [Pinata Dashboard](https://app.pinata.cloud) → Developer → API Keys → New Key → Copy JWT
    - **PINATA_GATEWAY**: Use `https://gateway.pinata.cloud/ipfs`
+
+3. **Set up your wallet**:
    
-3. **Compile the contract**:
+   Install the [Lace Wallet](https://lace.midnight.network) browser extension and:
+   - Create a new wallet (save your 24-word mnemonic phrase securely!)
+   - In Settings → Network, select **Undeployed**
+   
+   Your mnemonic phrase will be used for all deploy/fund commands.
+
+4. **Compile the contract**:
    ```bash
    npm run compile
    ```
 
-4. **Build and get your wallet address**:
-   ```bash
-   npm run build
-   npm run check-balance
-   ```
-   Copy the wallet address shown in the output, you'll need it to fund your wallet.
-
 5. **Start the local network** (in a separate terminal):
-
-   Before deploying, you must set up a local Midnight network and fund your wallet.
-
    ```bash
-   # In a separate terminal
    git clone https://github.com/bricktowers/midnight-local-network.git
    cd midnight-local-network
    yarn install
    docker compose up -d
+   docker ps  # Wait for "healthy" status
    ```
 
-   **Wait for containers to be healthy:**
-
+6. **Check your wallet address**:
    ```bash
-   docker ps  # All containers should show "healthy" status
+   npm run check-balance "your 24 word mnemonic phrase here"
    ```
+   This shows your wallet address (matches Lace) and balance.
 
-   **Fund your wallet** (use the address from step 4):
-
+7. **Fund your wallet**:
    ```bash
-   yarn fund <YOUR_WALLET_ADDRESS>
+   npm run fund "your 24 word mnemonic phrase here"
    ```
+   This uses the local network's genesis wallet to fund your address.
 
-6. **Deploy**:
-
+8. **Deploy the contract**:
    ```bash
-   # Return to the midnight-doc-manager directory
-   cd ../midnight-doc-manager
-   npm run deploy
+   npm run deploy "your 24 word mnemonic phrase here"
    ```
-
-   > **Troubleshooting**: If deployment times out, verify:
-   > - Docker containers are running and healthy: `docker ps`
-   > - Your `.env` has `MIDNIGHT_NETWORK=undeployed`
-   > - The wallet address you funded matches your `WALLET_SEED`
-
-   > **Tip**: You can run all setup steps at once with `npm run setup` (compiles, builds, and deploys)
+   
+   > **Security Note**: Your mnemonic is only used in memory during script execution and is not stored anywhere.
+   
+   > **Troubleshooting**: If deployment fails, verify:
+   > - Docker containers are healthy: `docker ps`
+   > - `.env` has `MIDNIGHT_NETWORK=undeployed`
+   > - You ran `npm run fund` first
 
 ## CLI Commands
 
 ```bash
 # Check your wallet address and balance
-npm run check-balance
+npm run check-balance "your mnemonic phrase"
 
 # Generate a keypair for encryption and sharing
 # This creates an X25519 keypair used to encrypt/decrypt shared document keys
@@ -114,23 +102,22 @@ npm run cli -- share grant <docId> <recipientPublicKey>
 
 | Script | Description |
 |--------|-------------|
-| `npm run setup` | Compile, build, and deploy |
 | `npm run compile` | Compile Compact contract |
 | `npm run build` | Build TypeScript to JavaScript |
-| `npm run deploy` | Deploy contract to network |
+| `npm run deploy "mnemonic"` | Deploy contract (requires funded wallet) |
+| `npm run fund "mnemonic"` | Fund wallet from genesis wallet |
+| `npm run check-balance "mnemonic"` | Check wallet address and balance |
 | `npm run cli` | Run the CLI application |
 | `npm run proof-server` | Start local proof server (Docker) |
 | `npm run serve` | Serve web frontend on port 3000 |
-| `npm run dev` | Run proof server + file watcher |
 | `npm run reset` | Delete compiled artifacts |
 | `npm run clean` | Clean build output |
 
 ## Environment Variables
 | Variable | Description |
 |----------|-------------|
-| `WALLET_SEED` | 64-character hex wallet seed |
-| `STORAGE_PASSWORD` | Password for encrypted private state |
 | `MIDNIGHT_NETWORK` | `preview` or `undeployed` |
+| `STORAGE_PASSWORD` | Password for encrypted private state |
 | `PINATA_JWT` | Your Pinata API JWT token |
 | `PINATA_GATEWAY` | IPFS gateway URL |
 

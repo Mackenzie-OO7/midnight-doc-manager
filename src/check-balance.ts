@@ -1,105 +1,73 @@
+#!/usr/bin/env tsx
+/**
+ * Check wallet balance and address
+ * Usage: npm run check-balance "your mnemonic words"
+ */
 import "dotenv/config";
-import { WalletBuilder } from "@midnight-ntwrk/wallet";
-import { NetworkId as ZswapNetworkId } from "@midnight-ntwrk/zswap";
-import { nativeToken } from "@midnight-ntwrk/ledger";
-import { WebSocket } from "ws";
-import * as Rx from "rxjs";
-import chalk from "chalk";
-import { EnvironmentManager } from "./utils/environment.js";
+import * as bip39 from 'bip39';
+import * as rx from 'rxjs';
+import * as ledger from '@midnight-ntwrk/ledger-v6';
+import { initWalletWithSeed } from './utils/wallet.js';
+import { MidnightBech32m } from '@midnight-ntwrk/wallet-sdk-address-format';
+import chalk from 'chalk';
 
-// Fix WebSocket for Node.js environment
-// @ts-ignore
-globalThis.WebSocket = WebSocket;
+const SHIELDED_NATIVE_RAW = ledger.shieldedToken().raw;
 
-async function checkBalance() {
-    try {
-        console.log();
-        console.log(chalk.blue.bold("━".repeat(60)));
-        console.log(chalk.blue.bold("🌙  Wallet Balance Checker"));
-        console.log(chalk.blue.bold("━".repeat(60)));
-        console.log();
+async function main(): Promise<void> {
+    console.log();
+    console.log(chalk.blue.bold("━".repeat(60)));
+    console.log(chalk.blue.bold("🌙  Midnight Wallet - Balance Check"));
+    console.log(chalk.blue.bold("━".repeat(60)));
+    console.log();
 
-        const seed = process.env.WALLET_SEED;
-        if (!seed) {
-            throw new Error("WALLET_SEED not found in .env file");
-        }
-
-        console.log(chalk.gray("Building wallet..."));
-        console.log();
-
-        // Get network configuration
-        const networkConfig = EnvironmentManager.getNetworkConfig();
-
-        // Determine the correct network ID based on MIDNIGHT_NETWORK
-        const networkType = process.env.MIDNIGHT_NETWORK || "preview";
-        const zswapNetworkId = networkType === "undeployed"
-            ? ZswapNetworkId.Undeployed
-            : ZswapNetworkId.TestNet;
-
-        // Build wallet from seed
-        const wallet = await WalletBuilder.buildFromSeed(
-            networkConfig.indexer,
-            networkConfig.indexerWS,
-            networkConfig.proofServer,
-            networkConfig.node,
-            seed,
-            zswapNetworkId,
-            "info"
-        );
-
-        wallet.start();
-
-        const state = await Rx.firstValueFrom(wallet.state());
-
-        console.log(chalk.cyan.bold("📍 Wallet Address:"));
-        console.log(chalk.white(`   ${state.address}`));
-        console.log();
-
-        const balance = state.balances[nativeToken()] || 0n;
-
-        if (balance === 0n) {
-            console.log(chalk.yellow.bold("💰 Balance: ") + chalk.red.bold("0 DUST"));
-            console.log();
-            console.log(chalk.red("❌ No funds detected."));
-            console.log();
-            console.log(chalk.magenta.bold("━".repeat(60)));
-            console.log(chalk.magenta.bold("📝 How to Get Test Tokens:"));
-            console.log(chalk.magenta.bold("━".repeat(60)));
-            console.log();
-            console.log(chalk.white("   1. ") + chalk.cyan("Visit: ") + chalk.underline("https://midnight.network/test-faucet"));
-            console.log(chalk.white("   2. ") + chalk.cyan("Paste your wallet address (shown above)"));
-            console.log(chalk.white("   3. ") + chalk.cyan("Request tokens from the faucet"));
-            console.log(chalk.white("   4. ") + chalk.cyan("Wait 2-5 minutes for processing"));
-            console.log(chalk.white("   5. ") + chalk.cyan("Run ") + chalk.yellow.bold("'npm run check-balance'") + chalk.cyan(" again"));
-            console.log();
-            console.log(chalk.gray("━".repeat(60)));
-            console.log(chalk.gray("💡 Tip: Faucet transactions typically take 2-5 minutes to process."));
-            console.log(chalk.gray("━".repeat(60)));
-        } else {
-            console.log(chalk.yellow.bold("💰 Balance: ") + chalk.green.bold(`${balance} DUST`));
-            console.log();
-            console.log(chalk.green.bold("✅ Wallet is funded and ready!"));
-            console.log();
-            console.log(chalk.magenta.bold("━".repeat(60)));
-            console.log(chalk.magenta.bold("🚀 Next Step:"));
-            console.log(chalk.magenta.bold("━".repeat(60)));
-            console.log();
-            console.log(chalk.cyan("   Deploy your contract with:"));
-            console.log(chalk.yellow.bold("   npm run deploy"));
-            console.log();
-            console.log(chalk.gray("━".repeat(60)));
-        }
-
-        console.log();
-        wallet.close();
-        process.exit(0);
-    } catch (error) {
-        console.log();
-        console.log(chalk.red.bold("❌ Error checking balance:"));
-        console.error(chalk.red(error instanceof Error ? error.message : String(error)));
-        console.log();
-        process.exit(1);
+    // Get mnemonic from CLI argument
+    const mnemonic = process.argv.slice(2).join(' ').trim();
+    if (!mnemonic || !bip39.validateMnemonic(mnemonic)) {
+        console.error(chalk.red('Usage: npm run check-balance "your twelve or twenty four mnemonic words"'));
+        console.error(chalk.gray('Get your mnemonic from Lace wallet: Settings → Recovery Phrase'));
+        process.exit(2);
     }
+
+    // Derive seed from mnemonic (first 32 bytes, same as Lace)
+    const seed = bip39.mnemonicToSeedSync(mnemonic).subarray(0, 32);
+    console.log(chalk.gray('🔐 Building wallet (same derivation as Lace)...'));
+
+    const { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore } = await initWalletWithSeed(seed);
+    await wallet.start(shieldedSecretKeys, dustSecretKey);
+
+    // Wait for wallet to sync
+    console.log(chalk.gray('⏳ Syncing with network...'));
+    await rx.firstValueFrom(wallet.state().pipe(rx.filter((s) => s.isSynced)));
+    const state = await rx.firstValueFrom(wallet.state());
+
+    // Get addresses
+    const shieldedAddress = MidnightBech32m.encode('undeployed', state.shielded.address).toString();
+    const unshieldedAddress = unshieldedKeystore.getBech32Address().toString();
+
+    // Get balance
+    const balance = state.shielded.balances[SHIELDED_NATIVE_RAW] ?? 0n;
+
+    console.log();
+    console.log(chalk.cyan.bold('📍 Shielded Address (for funding):'));
+    console.log(chalk.white(`   ${shieldedAddress}`));
+    console.log();
+    console.log(chalk.cyan.bold('📍 Unshielded Address:'));
+    console.log(chalk.white(`   ${unshieldedAddress}`));
+    console.log();
+    console.log(chalk.yellow.bold('💰 Shielded Balance: ') +
+        (balance > 0n ? chalk.green.bold(balance.toString()) : chalk.red.bold('0')));
+    console.log();
+
+    if (balance === 0n) {
+        console.log(chalk.gray('💡 To fund your wallet, run:'));
+        console.log(chalk.cyan(`   npm run fund "${mnemonic.split(' ').slice(0, 3).join(' ')}..."`));
+        console.log();
+    }
+
+    await wallet.stop();
 }
 
-checkBalance();
+main().catch((err) => {
+    console.error(chalk.red('❌ Error:'), err);
+    process.exit(1);
+});
