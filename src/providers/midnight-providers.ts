@@ -32,6 +32,7 @@ export class MidnightProviders {
       privateStateProvider: levelPrivateStateProvider({
         privateStateStoreName:
           config.privateStateStoreName || `${config.contractName}-state`,
+        walletProvider: config.walletProvider,
       }),
       publicDataProvider: indexerPublicDataProvider(
         config.networkConfig.indexer,
@@ -44,3 +45,4 @@ export class MidnightProviders {
     };
   }
 }
+

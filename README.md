@@ -28,7 +28,7 @@ A privacy-preserving document management system built on the Midnight Network. E
 
 3. **Set up your wallet**:
    
-   Install the [Lace Wallet](https://lace.midnight.network) browser extension and:
+   Install the [Lace Midnight Preview](https://chromewebstore.google.com/detail/hgeekaiplokcnmakghbdfbgnlfheichg) browser extension and:
    - Create a new wallet (save your 24-word mnemonic phrase securely!)
    - In Settings → Network, select **Undeployed**
    
@@ -60,7 +60,13 @@ A privacy-preserving document management system built on the Midnight Network. E
    ```
    This uses the local network's genesis wallet to fund your address.
 
-8. **Deploy the contract**:
+8. **Generate dust tokens**:
+   ```bash
+   npm run generate-dust "your 24 word mnemonic phrase here"
+   ```
+   Dust tokens are required for transaction fees during deployment.
+
+9. **Deploy the contract**:
    ```bash
    npm run deploy "your 24 word mnemonic phrase here"
    ```
@@ -70,13 +76,19 @@ A privacy-preserving document management system built on the Midnight Network. E
    > **Troubleshooting**: If deployment fails, verify:
    > - Docker containers are healthy: `docker ps`
    > - `.env` has `MIDNIGHT_NETWORK=undeployed`
-   > - You ran `npm run fund` first
+   > - You ran `npm run fund` and `npm run generate-dust` first
 
 ## CLI Commands
 
 ```bash
 # Check your wallet address and balance
 npm run check-balance "your mnemonic phrase"
+
+# Fund your wallet (local network only)
+npm run fund "your mnemonic phrase"
+
+# Generate dust tokens for transactions
+npm run generate-dust "your mnemonic phrase"
 
 # Generate a keypair for encryption and sharing
 # This creates an X25519 keypair used to encrypt/decrypt shared document keys
@@ -106,6 +118,7 @@ npm run cli -- share grant <docId> <recipientPublicKey>
 | `npm run build` | Build TypeScript to JavaScript |
 | `npm run deploy "mnemonic"` | Deploy contract (requires funded wallet) |
 | `npm run fund "mnemonic"` | Fund wallet from genesis wallet |
+| `npm run generate-dust "mnemonic"` | Generate dust tokens for transactions |
 | `npm run check-balance "mnemonic"` | Check wallet address and balance |
 | `npm run cli` | Run the CLI application |
 | `npm run proof-server` | Start local proof server (Docker) |
@@ -120,6 +133,7 @@ npm run cli -- share grant <docId> <recipientPublicKey>
 | `STORAGE_PASSWORD` | Password for encrypted private state |
 | `PINATA_JWT` | Your Pinata API JWT token |
 | `PINATA_GATEWAY` | IPFS gateway URL |
+| `WALLET_SEED` | Your 12/24 word mnemonic phrase |
 
 ## Project Structure
 
@@ -139,7 +153,10 @@ midnight-doc-manager/
 │   │   └── keys.ts             # X25519 key management
 │   ├── cli.ts                  # CLI application
 │   ├── storage.ts              # IPFS/Arweave providers
-│   └── deploy.ts               # Deployment script
+│   ├── deploy.ts               # Deployment script
+│   ├── fund.ts                 # Fund wallet
+│   ├── generate-dust.ts        # Generate dust tokens
+│   └── health-check.ts         # Network connectivity check
 ├── web/                        # Frontend
 │   ├── app.js
 │   ├── index.html

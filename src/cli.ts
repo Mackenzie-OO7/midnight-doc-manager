@@ -127,25 +127,11 @@ keys.command("address")
 program.command("deploy")
   .description("Deploy the contract")
   .action(async () => {
-    try {
-      console.log(chalk.blue.bold("\n🚀 Deploying Contract...\n"));
-      const contract = createDocumentManager();
-      const address = await contract.connect();
-      console.log(chalk.gray("Wallet:"), address.slice(0, 24) + "...");
-      await contract.waitForSync();
-      const balance = await contract.getBalance();
-      console.log(chalk.gray("Balance:"), `${balance} DUST`);
-      if (balance === 0n) {
-        console.log(chalk.red("\n❌ Wallet needs funding!"));
-        console.log(chalk.yellow("Faucet: https://midnight.network/test-faucet\n"));
-        await contract.close();
-        return;
-      }
-      const info = await contract.deploy();
-      await contract.close();
-      console.log(chalk.green.bold("\n✅ Deployed!\n"));
-      console.log(chalk.cyan("Address:"), info.contractAddress, "\n");
-    } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
+    console.log(chalk.blue.bold("\n🚀 Contract Deployment\n"));
+    console.log(chalk.yellow("Use the deploy script with your mnemonic:"));
+    console.log(chalk.cyan('\n  npm run deploy "your twelve or twenty four word mnemonic"\n'));
+    console.log(chalk.gray("This ensures proper wallet initialization and transaction signing."));
+    console.log(chalk.gray("After deployment, the contract address is saved to deployment.json\n"));
   });
 
 // Upload
