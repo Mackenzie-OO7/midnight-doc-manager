@@ -91,23 +91,25 @@ npm run fund "your mnemonic phrase"
 npm run generate-dust "your mnemonic phrase"
 
 # Generate a keypair for encryption and sharing
-# This creates an X25519 keypair used to encrypt/decrypt shared document keys
 npm run cli -- keys generate
 
 # Upload a document
-npm run cli -- upload ./myfile.pdf
+npm run cli -- upload ./myfile.pdf "your mnemonic phrase"
 
 # List your documents
 npm run cli -- list
 
 # Download a document
-npm run cli -- download <docId> -o ./output.pdf
+npm run cli -- download <docId> "your mnemonic phrase" -o ./output.pdf
 
 # Verify document integrity
-npm run cli -- verify <docId>
+npm run cli -- verify ./myfile.pdf <docId> "your mnemonic phrase"
 
 # Share with another user
-npm run cli -- share grant <docId> <recipientPublicKey>
+npm run cli -- share grant <docId> <recipientPublicKey> "your mnemonic phrase"
+
+# Revoke access
+npm run cli -- share revoke <docId> <recipientPublicKey> "your mnemonic phrase"
 ```
 
 ## Available Scripts

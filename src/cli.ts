@@ -139,9 +139,10 @@ program.command("deploy")
 program.command("upload")
   .description("Upload a document")
   .argument("<file>", "File path")
+  .argument("<seed>", "Wallet mnemonic phrase")
   .option("-k, --keypair <path>", "Keypair file", DEFAULT_KEYPAIR_PATH)
   .option("--dry-run", "Simulate only", false)
-  .action(async (filePath: string, options) => {
+  .action(async (filePath: string, seed: string, options) => {
     try {
       const absPath = path.resolve(filePath);
       if (!fs.existsSync(absPath)) { console.error(chalk.red("❌ File not found")); process.exit(1); }
@@ -167,7 +168,7 @@ program.command("upload")
       const wrappedKey = wrapDocumentKey(documentKey, keypair.publicKey, keypair);
 
       if (!options.dryRun) {
-        const contract = createDocumentManager();
+        const contract = createDocumentManager(seed);
         await contract.connect();
         await contract.waitForSync();
         const info = contract.loadDeploymentInfo();
@@ -193,11 +194,12 @@ program.command("verify")
   .description("Verify a document")
   .argument("<file>", "File to verify")
   .argument("<doc-id>", "Document ID (hex)")
-  .action(async (filePath: string, docId: string) => {
+  .argument("<seed>", "Wallet mnemonic phrase")
+  .action(async (filePath: string, docId: string, seed: string) => {
     try {
       const fileData = fs.readFileSync(path.resolve(filePath));
       const hash = computeContentHash(fileData);
-      const contract = createDocumentManager();
+      const contract = createDocumentManager(seed);
       await contract.connect();
       await contract.waitForSync();
       const info = contract.loadDeploymentInfo();
@@ -214,9 +216,10 @@ program.command("verify")
 program.command("download")
   .description("Download and decrypt a document")
   .argument("<doc-id>", "Document ID (hex)")
+  .argument("<seed>", "Wallet mnemonic phrase")
   .option("-k, --keypair <path>", "Keypair file", DEFAULT_KEYPAIR_PATH)
   .option("-o, --output <path>", "Output file")
-  .action(async (docId: string, options) => {
+  .action(async (docId: string, seed: string, options) => {
     try {
       const metaPath = findMetadataFile(docId);
       if (!metaPath) { console.error(chalk.red("❌ Metadata not found")); process.exit(1); }
@@ -245,8 +248,9 @@ share.command("grant")
   .description("Grant access")
   .argument("<doc-id>", "Document ID")
   .argument("<pubkey>", "Recipient public key (hex)")
+  .argument("<seed>", "Wallet mnemonic phrase")
   .option("-k, --keypair <path>", "Your keypair", DEFAULT_KEYPAIR_PATH)
-  .action(async (docId: string, pubkey: string, options) => {
+  .action(async (docId: string, pubkey: string, seed: string, options) => {
     try {
       const metaPath = findMetadataFile(docId);
       if (!metaPath) { console.error(chalk.red("❌ Metadata not found")); process.exit(1); }
@@ -260,7 +264,7 @@ share.command("grant")
       const wrapped = wrapDocumentKey(docKey, recipientPk, ownerKp);
       const commitment = computeOwnerCommitment(recipientPk);
 
-      const contract = createDocumentManager();
+      const contract = createDocumentManager(seed);
       await contract.connect();
       await contract.waitForSync();
       const info = contract.loadDeploymentInfo();
@@ -277,10 +281,11 @@ share.command("revoke")
   .description("Revoke access")
   .argument("<doc-id>", "Document ID")
   .argument("<pubkey>", "Recipient public key (hex)")
-  .action(async (docId: string, pubkey: string) => {
+  .argument("<seed>", "Wallet mnemonic phrase")
+  .action(async (docId: string, pubkey: string, seed: string) => {
     try {
       const commitment = computeOwnerCommitment(parsePublicKeyHex(pubkey));
-      const contract = createDocumentManager();
+      const contract = createDocumentManager(seed);
       await contract.connect();
       await contract.waitForSync();
       const info = contract.loadDeploymentInfo();

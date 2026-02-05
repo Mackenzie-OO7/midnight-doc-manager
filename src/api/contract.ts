@@ -378,12 +378,14 @@ export class DocumentManagerContract {
 }
 
 /**
- * Create a contract instance using WALLET_SEED from environment
+ * Create a contract instance
+ * @param mnemonic - Optional mnemonic phrase. If not provided, uses WALLET_SEED from environment.
  */
-export function createDocumentManager(): DocumentManagerContract {
-    const walletSeed = process.env.WALLET_SEED;
+export function createDocumentManager(mnemonic?: string): DocumentManagerContract {
+    const walletSeed = mnemonic || process.env.WALLET_SEED;
     if (!walletSeed) {
-        throw new Error("WALLET_SEED not set in environment");
+        throw new Error("Mnemonic not provided and WALLET_SEED not set in environment");
     }
     return new DocumentManagerContract(walletSeed);
 }
+
