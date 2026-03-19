@@ -1,98 +1,154 @@
-// Wallet utilities for mnemonic-based wallet initialization
-// Based on midnight-playground by Shagun Prasad
-// Licensed under Apache-2.0
-
-import * as ledger from '@midnight-ntwrk/ledger-v6';
-import type { DefaultV1Configuration as DustConfiguration } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
+/**
+ * Wallet utilities for seed-based wallet initialization.
+ * Mirrors midnight-local-dev's wallet initialization pattern exactly,
+ * ensuring address derivation is consistent across both repos.
+ */
+import * as ledger from '@midnight-ntwrk/ledger-v7';
+import { type DefaultConfiguration, WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
 import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
-import { WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
 import { HDWallet, Roles } from '@midnight-ntwrk/wallet-sdk-hd';
 import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded';
-import type { DefaultV1Configuration as ShieldedConfiguration } from '@midnight-ntwrk/wallet-sdk-shielded/v1';
 import {
-    createKeystore,
-    InMemoryTransactionHistoryStorage,
-    PublicKey as UnshieldedPublicKey,
-    type UnshieldedKeystore,
-    UnshieldedWallet,
+  createKeystore,
+  InMemoryTransactionHistoryStorage,
+  PublicKey,
+  UnshieldedWallet,
+  type UnshieldedKeystore,
 } from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
+import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import {
+  MidnightBech32m,
+  ShieldedAddress,
+  ShieldedCoinPublicKey,
+  ShieldedEncryptionPublicKey,
+} from '@midnight-ntwrk/wallet-sdk-address-format';
+import * as bip39 from '@scure/bip39';
+import { wordlist as english } from '@scure/bip39/wordlists/english.js';
+import type { NetworkId } from '@midnight-ntwrk/wallet-sdk-abstractions';
+import * as Rx from 'rxjs';
 import { Buffer } from 'buffer';
 
-// Network configuration from environment or defaults (for undeployed local network)
-const INDEXER_PORT = Number.parseInt(process.env['INDEXER_PORT'] ?? '8088', 10);
-const NODE_PORT = Number.parseInt(process.env['NODE_PORT'] ?? '9944', 10);
-const PROOF_SERVER_PORT = Number.parseInt(process.env['PROOF_SERVER_PORT'] ?? '6300', 10);
+export const NETWORK_ID = (process.env.MIDNIGHT_NETWORK ?? 'undeployed') as NetworkId.NetworkId;
 
-const INDEXER_HTTP_URL = process.env['MIDNIGHT_INDEXER_URL'] ?? `http://localhost:${INDEXER_PORT}/api/v3/graphql`;
-const INDEXER_WS_URL = process.env['MIDNIGHT_INDEXER_WS_URL'] ?? `ws://localhost:${INDEXER_PORT}/api/v3/graphql/ws`;
+setNetworkId(NETWORK_ID as Parameters<typeof setNetworkId>[0]);
 
-export const NETWORK_ID = 'undeployed';
-
-export const configuration: ShieldedConfiguration & DustConfiguration & { indexerUrl: string } = {
-    networkId: NETWORK_ID,
-    costParameters: {
-        additionalFeeOverhead: 300_000_000_000_000_000n,
-        feeBlocksMargin: 5,
-    },
-    relayURL: new URL(`ws://localhost:${NODE_PORT}`),
-    provingServerUrl: new URL(`http://localhost:${PROOF_SERVER_PORT}`),
-    indexerClientConnection: {
-        indexerHttpUrl: INDEXER_HTTP_URL,
-        indexerWsUrl: INDEXER_WS_URL,
-    },
-    indexerUrl: INDEXER_WS_URL,
-};
+export const INDEXER_HTTP = process.env.MIDNIGHT_INDEXER_URL ?? (
+  NETWORK_ID === 'preprod'
+    ? 'https://indexer.preprod.midnight.network/api/v3/graphql'
+    : 'http://localhost:8088/api/v3/graphql'
+);
+export const INDEXER_WS = process.env.MIDNIGHT_INDEXER_WS_URL ?? (
+  NETWORK_ID === 'preprod'
+    ? 'wss://indexer.preprod.midnight.network/api/v3/graphql/ws'
+    : 'ws://localhost:8088/api/v3/graphql/ws'
+);
+export const NODE_URL = process.env.MIDNIGHT_NODE_URL ?? (
+  NETWORK_ID === 'preprod'
+    ? 'https://rpc.preprod.midnight.network'
+    : 'http://localhost:9944'
+);
+export const PROOF_SERVER_URL = process.env.PROOF_SERVER_URL ?? 'http://127.0.0.1:6300';
 
 export interface WalletContext {
-    wallet: WalletFacade;
-    shieldedSecretKeys: ledger.ZswapSecretKeys;
-    dustSecretKey: ledger.DustSecretKey;
-    unshieldedKeystore: UnshieldedKeystore;
+  wallet: WalletFacade;
+  shieldedSecretKeys: ledger.ZswapSecretKeys;
+  dustSecretKey: ledger.DustSecretKey;
+  unshieldedKeystore: UnshieldedKeystore;
 }
 
 /**
- * Initialize a wallet from a 32-byte seed (first 32 bytes of BIP-39 derived seed)
- * Uses the same HD derivation path as Lace wallet
+ * Convert a BIP39 mnemonic to a seed buffer.
+ * Uses the full 64-byte seed, matching midnight-local-dev exactly.
+ */
+export const mnemonicToSeed = async (mnemonic: string): Promise<Buffer> => {
+  const words = mnemonic.trim().split(/\s+/).join(' ');
+  if (!bip39.validateMnemonic(words, english)) {
+    throw new Error('Invalid mnemonic phrase');
+  }
+  return Buffer.from(await bip39.mnemonicToSeed(words));
+};
+
+/**
+ * Initialize a wallet from a seed buffer.
+ * Uses the same HD derivation and WalletFacade.init() pattern as midnight-local-dev.
  */
 export const initWalletWithSeed = async (seed: Buffer): Promise<WalletContext> => {
-    const hdWallet = HDWallet.fromSeed(Uint8Array.from(seed));
+  const hdResult = HDWallet.fromSeed(seed);
+  if (hdResult.type !== 'seedOk') {
+    throw new Error(`Failed to initialize HDWallet: ${String((hdResult as any).error)}`);
+  }
 
-    if (hdWallet.type !== 'seedOk') {
-        throw new Error('Failed to initialize HDWallet');
-    }
+  const derivation = hdResult.hdWallet
+    .selectAccount(0)
+    .selectRoles([Roles.Zswap, Roles.NightExternal, Roles.Dust])
+    .deriveKeysAt(0);
 
-    // Derive keys at account 0, index 0 for roles: Zswap (shielded), NightExternal (unshielded), Dust
-    const derivationResult = hdWallet.hdWallet
-        .selectAccount(0)
-        .selectRoles([Roles.Zswap, Roles.NightExternal, Roles.Dust])
-        .deriveKeysAt(0);
+  if (derivation.type !== 'keysDerived') throw new Error('Failed to derive keys from HDWallet');
 
-    if (derivationResult.type !== 'keysDerived') {
-        throw new Error('Failed to derive keys');
-    }
+  hdResult.hdWallet.clear();
 
-    // Clear the HD wallet from memory after derivation
-    hdWallet.hdWallet.clear();
+  const shieldedSecretKeys = ledger.ZswapSecretKeys.fromSeed(derivation.keys[Roles.Zswap]);
+  const dustSecretKey = ledger.DustSecretKey.fromSeed(derivation.keys[Roles.Dust]);
+  const unshieldedKeystore = createKeystore(derivation.keys[Roles.NightExternal], NETWORK_ID);
 
-    // Create secret keys from derived seeds
-    const shieldedSecretKeys = ledger.ZswapSecretKeys.fromSeed(derivationResult.keys[Roles.Zswap]);
-    const dustSecretKey = ledger.DustSecretKey.fromSeed(derivationResult.keys[Roles.Dust]);
-    const unshieldedKeystore = createKeystore(derivationResult.keys[Roles.NightExternal], configuration.networkId);
+  const configuration: DefaultConfiguration = {
+    networkId: NETWORK_ID,
+    indexerClientConnection: { indexerHttpUrl: INDEXER_HTTP, indexerWsUrl: INDEXER_WS },
+    provingServerUrl: new URL(PROOF_SERVER_URL),
+    relayURL: new URL(NODE_URL.replace(/^http/, 'ws')),
+    costParameters: {
+      additionalFeeOverhead: 300_000_000_000_000n,
+      feeBlocksMargin: 5,
+    },
+    txHistoryStorage: new InMemoryTransactionHistoryStorage(),
+  };
 
-    // Initialize the three wallet types
-    const shieldedWallet = ShieldedWallet(configuration).startWithSecretKeys(shieldedSecretKeys);
-    const dustWallet = DustWallet(configuration).startWithSecretKey(
-        dustSecretKey,
-        ledger.LedgerParameters.initialParameters().dust,
-    );
-    const unshieldedWallet = UnshieldedWallet({
-        ...configuration,
-        txHistoryStorage: new InMemoryTransactionHistoryStorage(),
-    }).startWithPublicKey(UnshieldedPublicKey.fromKeyStore(unshieldedKeystore));
+  const facade = await WalletFacade.init({
+    configuration,
+    shielded: (cfg) => ShieldedWallet(cfg).startWithSecretKeys(shieldedSecretKeys),
+    unshielded: (cfg) => UnshieldedWallet(cfg).startWithPublicKey(PublicKey.fromKeyStore(unshieldedKeystore)),
+    dust: (cfg) => DustWallet(cfg).startWithSecretKey(dustSecretKey, ledger.LedgerParameters.initialParameters().dust),
+  });
+  await facade.start(shieldedSecretKeys, dustSecretKey);
 
-    // Create and start the facade
-    const facade: WalletFacade = new WalletFacade(shieldedWallet, unshieldedWallet, dustWallet);
-    await facade.start(shieldedSecretKeys, dustSecretKey);
+  return { wallet: facade, shieldedSecretKeys, dustSecretKey, unshieldedKeystore };
+};
 
-    return { wallet: facade, shieldedSecretKeys, dustSecretKey, unshieldedKeystore };
+export const getUnshieldedAddress = (unshieldedKeystore: UnshieldedKeystore): string =>
+  unshieldedKeystore.getBech32Address().asString();
+
+export const getShieldedAddress = (shieldedSecretKeys: ledger.ZswapSecretKeys): string =>
+  MidnightBech32m.encode(
+    NETWORK_ID,
+    new ShieldedAddress(
+      ShieldedCoinPublicKey.fromHexString(shieldedSecretKeys.coinPublicKey),
+      ShieldedEncryptionPublicKey.fromHexString(shieldedSecretKeys.encryptionPublicKey),
+    ),
+  ).asString();
+
+export const getDustBalance = (state: any): bigint =>
+  state.dust?.balance(new Date()) ?? 0n;
+
+/**
+ * Register all available unshielded UTXOs for dust generation.
+ * Idempotent — safe to call even if already registered.
+ */
+export const registerForDustGeneration = async (walletCtx: WalletContext): Promise<void> => {
+  const state = await Rx.firstValueFrom(
+    walletCtx.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
+  );
+
+  const coins = (state.unshielded as any)?.availableCoins?.filter(
+    (coin: any) => coin.meta?.registeredForDustGeneration === false,
+  ) ?? [];
+
+  if (coins.length === 0) return;
+
+  const recipe = await walletCtx.wallet.registerNightUtxosForDustGeneration(
+    coins,
+    walletCtx.unshieldedKeystore.getPublicKey(),
+    (payload: Uint8Array) => walletCtx.unshieldedKeystore.signData(payload),
+  );
+
+  await walletCtx.wallet.submitTransaction(await walletCtx.wallet.finalizeRecipe(recipe));
 };

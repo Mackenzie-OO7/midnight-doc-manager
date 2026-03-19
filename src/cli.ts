@@ -6,8 +6,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomBytes } from "crypto";
 
-// Utils imports
-
 import {
   generateDocumentKey,
   encryptFile,
@@ -28,11 +26,8 @@ import {
   deserializeWrappedKey,
 } from "./utils/keys.js";
 import { uploadToStorage, downloadFromStorage } from "./storage.js";
-import { createDocumentManager } from "./api/contract.js";
+import { createDocumentManager, DocumentManagerContract } from "./api/contract.js";
 import { computeOwnerCommitment } from "./api/witnesses.js";
-import { EnvironmentManager } from "./utils/environment.js";
-
-// Constants & Utilities
 
 const DEFAULT_KEYPAIR_PATH = ".midnight-doc-keys.json";
 
@@ -40,7 +35,9 @@ function getFileType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const mimeTypes: Record<string, string> = {
     ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown",
-    ".json": "application/json", ".jpg": "image/jpeg", ".png": "image/png",
+    ".json": "application/json", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif", ".mp4": "video/mp4",
+    ".zip": "application/zip",
   };
   return mimeTypes[ext] || "application/octet-stream";
 }
@@ -57,7 +54,26 @@ function findMetadataFile(documentIdHex: string): string | null {
   return fs.existsSync(metaPath) ? metaPath : null;
 }
 
-// Main Program
+function loadDeploymentInfo(): { contractAddress: string } | null {
+  const deploymentPath = path.join(process.cwd(), "deployment.json");
+  if (!fs.existsSync(deploymentPath)) return null;
+  return JSON.parse(fs.readFileSync(deploymentPath, "utf-8"));
+}
+
+function resolveOutputPath(requested: string | undefined, originalFileName: string): {
+  outPath: string;
+  corrected: boolean;
+} {
+  const originalExt = path.extname(originalFileName);
+  if (!requested) return { outPath: originalFileName, corrected: false };
+  const requestedExt = path.extname(requested);
+  const stem = requested.replace(/\.[^/.]+$/, "") || requested;
+  const outPath = originalExt ? stem + originalExt : requested;
+  const corrected = requestedExt !== "" && requestedExt.toLowerCase() !== originalExt.toLowerCase();
+  return { outPath, corrected };
+}
+
+// ── Program ──────────────────────────────────────────────────────────────────
 
 const program = new Command();
 program
@@ -66,7 +82,7 @@ program
     "  Privacy-preserving document management on the Midnight blockchain.")
   .version("1.0.0");
 
-// Keys
+// ── Keys ─────────────────────────────────────────────────────────────────────
 
 const keys = program.command("keys").description("Manage keypairs");
 
@@ -78,16 +94,13 @@ keys.command("generate")
     try {
       const outputPath = path.resolve(options.output);
       if (fs.existsSync(outputPath) && !options.force) {
-        console.log(chalk.yellow("⚠️ Keypair exists. Use --force to overwrite"));
+        console.log(chalk.yellow("⚠️  Keypair exists. Use --force to overwrite"));
         return;
       }
       const keypair = generateKeyPair();
       saveKeyPair(keypair, outputPath);
-      const publicKeyHex = getPublicKeyHex(keypair);
-      const commitment = computeOwnerCommitment(keypair.secretKey);
       console.log(chalk.green("\n✅ Keypair generated!\n"));
-      console.log(chalk.cyan("Public Key:"), publicKeyHex);
-      console.log(chalk.cyan("Commitment:"), Buffer.from(commitment).toString("hex"));
+      console.log(chalk.cyan("Public Key:"), getPublicKeyHex(keypair));
       console.log(chalk.gray("\nSaved to:"), outputPath, "\n");
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
@@ -103,26 +116,11 @@ keys.command("show")
         return;
       }
       const keypair = loadKeyPair(inputPath);
-      console.log(chalk.cyan("\n🔑 Public Key:"), getPublicKeyHex(keypair));
-      console.log(chalk.cyan("🔒 Commitment:"), Buffer.from(computeOwnerCommitment(keypair.secretKey)).toString("hex"), "\n");
+      console.log(chalk.cyan("\n🔑 Public Key:"), getPublicKeyHex(keypair), "\n");
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
 
-keys.command("address")
-  .description("Show your wallet address (requires network connection)")
-  .action(async () => {
-    try {
-      console.log(chalk.blue("\n🔍 Getting wallet address...\n"));
-      const contract = createDocumentManager();
-      const address = await contract.connect();
-      console.log(chalk.cyan("Your wallet address:"));
-      console.log(address);
-      console.log("");
-      await contract.close();
-    } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
-  });
-
-// Deploy
+// ── Deploy ────────────────────────────────────────────────────────────────────
 
 program.command("deploy")
   .description("Deploy the contract")
@@ -134,7 +132,7 @@ program.command("deploy")
     console.log(chalk.gray("After deployment, the contract address is saved to deployment.json\n"));
   });
 
-// Upload
+// ── Upload ────────────────────────────────────────────────────────────────────
 
 program.command("upload")
   .description("Upload a document")
@@ -159,26 +157,39 @@ program.command("upload")
       const packed = packEncryptedData(encrypted);
       console.log(chalk.gray("Encrypted:"), formatBytes(packed.length));
 
-      EnvironmentManager.validateStorageConfig();
       const upload = await uploadToStorage(packed, { name: fileName, contentType: "application/octet-stream" });
       console.log(chalk.gray("Storage:"), upload.storageId);
 
       const documentId = createHash("sha256").update(contentHash).update(randomBytes(16)).digest();
-      const ownerCommitment = computeOwnerCommitment(keypair.secretKey);
       const wrappedKey = wrapDocumentKey(documentKey, keypair.publicKey, keypair);
 
       if (!options.dryRun) {
         const contract = createDocumentManager(seed);
         await contract.connect();
         await contract.waitForSync();
-        const info = contract.loadDeploymentInfo();
+        const info = loadDeploymentInfo();
         if (!info) { console.error(chalk.red("❌ Deploy first")); await contract.close(); process.exit(1); }
         await contract.connectToDeployed(info.contractAddress);
-        await contract.registerDocument(new Uint8Array(documentId), new Uint8Array(contentHash), upload.storageId, new Uint8Array(ownerCommitment), getFileType(absPath));
+        const ownerCommitment = contract.getOwnerCommitment();
+        await contract.registerDocument(
+          new Uint8Array(documentId),
+          new Uint8Array(contentHash),
+          upload.storageId,
+          ownerCommitment,
+          getFileType(absPath),
+        );
         await contract.close();
       }
 
-      const meta = { documentId: documentId.toString("hex"), fileName, contentHash: contentHash.toString("hex"), storageCid: upload.storageId, gatewayUrl: upload.gatewayUrl, wrappedKey: serializeWrappedKey(wrappedKey), uploadedAt: new Date().toISOString() };
+      const meta = {
+        documentId: documentId.toString("hex"),
+        fileName,
+        contentHash: contentHash.toString("hex"),
+        storageCid: upload.storageId,
+        gatewayUrl: upload.gatewayUrl,
+        wrappedKey: serializeWrappedKey(wrappedKey),
+        uploadedAt: new Date().toISOString(),
+      };
       const metaPath = `${documentId.toString("hex").slice(0, 16)}.doc.json`;
       fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
 
@@ -188,11 +199,11 @@ program.command("upload")
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
 
-// Verify
+// ── Verify ────────────────────────────────────────────────────────────────────
 
 program.command("verify")
-  .description("Verify a document")
-  .argument("<file>", "File to verify")
+  .description("Verify a document against its on-chain hash")
+  .argument("<file>", "Local file to verify")
   .argument("<doc-id>", "Document ID (hex)")
   .argument("<seed>", "Wallet mnemonic phrase")
   .action(async (filePath: string, docId: string, seed: string) => {
@@ -202,54 +213,102 @@ program.command("verify")
       const contract = createDocumentManager(seed);
       await contract.connect();
       await contract.waitForSync();
-      const info = contract.loadDeploymentInfo();
+      const info = loadDeploymentInfo();
       if (!info) { console.error(chalk.red("❌ Not deployed")); await contract.close(); process.exit(1); }
       await contract.connectToDeployed(info.contractAddress);
       const valid = await contract.verifyDocument(new Uint8Array(Buffer.from(docId, "hex")), new Uint8Array(hash));
       await contract.close();
-      console.log(valid ? chalk.green("\n✅ VERIFIED\n") : chalk.red("\n❌ FAILED\n"));
+      console.log(valid ? chalk.green("\n✅ VERIFIED\n") : chalk.red("\n❌ HASH MISMATCH — file has changed since upload\n"));
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
 
-// Download  
+// ── Download ──────────────────────────────────────────────────────────────────
 
 program.command("download")
   .description("Download and decrypt a document")
   .argument("<doc-id>", "Document ID (hex)")
   .argument("<seed>", "Wallet mnemonic phrase")
   .option("-k, --keypair <path>", "Keypair file", DEFAULT_KEYPAIR_PATH)
-  .option("-o, --output <path>", "Output file")
+  .option("-o, --output <path>", "Output path (extension is always set to match the original file)")
   .action(async (docId: string, seed: string, options) => {
     try {
       const metaPath = findMetadataFile(docId);
-      if (!metaPath) { console.error(chalk.red("❌ Metadata not found")); process.exit(1); }
+      if (!metaPath) {
+        console.error(chalk.red("❌ Metadata file not found. Share the .doc.json file along with the document ID."));
+        process.exit(1);
+      }
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
       const keypair = loadKeyPair(path.resolve(options.keypair));
 
       const encrypted = await downloadFromStorage(meta.storageCid);
       const unpacked = unpackEncryptedData(encrypted);
-      const docKey = unwrapDocumentKey(deserializeWrappedKey(meta.wrappedKey), keypair.secretKey);
-      if (!docKey) { console.error(chalk.red("❌ Wrong keypair")); process.exit(1); }
 
-      const decrypted = decryptFile(unpacked, docKey);
+      // Try the local wrapped key first (owner path).
+      let docKey: Buffer | null = null;
+      try {
+        docKey = unwrapDocumentKey(deserializeWrappedKey(meta.wrappedKey), keypair.secretKey);
+      } catch {
+        // Not the owner — fall through to chain lookup.
+      }
+
+      if (!docKey) {
+        const info = loadDeploymentInfo();
+        if (!info) { console.error(chalk.red("❌ Not deployed")); process.exit(1); }
+
+        // Sync the recipient's wallet (no DUST needed), then read the access
+        // grant directly from the indexer via connectToDeployed — no callTx.
+        // Re-connect on each attempt to read the latest indexed state.
+        const contract = createDocumentManager(seed);
+        await contract.connect();
+        await contract.waitForSync();
+
+        const recipientCommitment = computeOwnerCommitment(keypair.publicKey);
+        const docIdBytes = new Uint8Array(Buffer.from(docId, "hex"));
+
+        let grant = null;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          if (attempt > 0) await new Promise(res => setTimeout(res, 2000));
+          await contract.connectToDeployed(info.contractAddress);
+          grant = await contract.readAccessGrant(docIdBytes, new Uint8Array(recipientCommitment));
+          if (grant) break;
+        }
+
+        await contract.close();
+
+        if (!grant) {
+          console.error(chalk.red("❌ No access grant found on-chain for this keypair."));
+          process.exit(1);
+        }
+
+        try {
+          docKey = unwrapDocumentKey(deserializeWrappedKey(grant), keypair.secretKey);
+        } catch {
+          console.error(chalk.red("❌ Access grant found but key could not be decrypted. Wrong keypair."));
+          process.exit(1);
+        }
+      }
+
+      const decrypted = decryptFile(unpacked, docKey!);
       if (!decrypted) { console.error(chalk.red("❌ Decryption failed")); process.exit(1); }
 
-      const outPath = options.output || meta.fileName;
+      const { outPath, corrected } = resolveOutputPath(options.output, meta.fileName);
       fs.writeFileSync(outPath, decrypted);
-      console.log(chalk.green("\n✅ Downloaded:"), outPath, "\n");
+      console.log(chalk.green("\n✅ Downloaded:"), outPath);
+      if (corrected) console.log(chalk.yellow("ℹ️  Extension corrected to match original:"), meta.fileName);
+      console.log(chalk.gray("Original file:"), meta.fileName, "\n");
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
 
-// Share
+// ── Share ─────────────────────────────────────────────────────────────────────
 
-const share = program.command("share").description("Share access");
+const share = program.command("share").description("Share document access");
 
 share.command("grant")
-  .description("Grant access")
+  .description("Grant another user access to a document")
   .argument("<doc-id>", "Document ID")
-  .argument("<pubkey>", "Recipient public key (hex)")
-  .argument("<seed>", "Wallet mnemonic phrase")
-  .option("-k, --keypair <path>", "Your keypair", DEFAULT_KEYPAIR_PATH)
+  .argument("<pubkey>", "Recipient X25519 public key (hex) from their keys generate command")
+  .argument("<seed>", "Your wallet mnemonic phrase")
+  .option("-k, --keypair <path>", "Your keypair file", DEFAULT_KEYPAIR_PATH)
   .action(async (docId: string, pubkey: string, seed: string, options) => {
     try {
       const metaPath = findMetadataFile(docId);
@@ -258,49 +317,68 @@ share.command("grant")
       const ownerKp = loadKeyPair(path.resolve(options.keypair));
 
       const docKey = unwrapDocumentKey(deserializeWrappedKey(meta.wrappedKey), ownerKp.secretKey);
-      if (!docKey) { console.error(chalk.red("❌ Not owner")); process.exit(1); }
-
       const recipientPk = parsePublicKeyHex(pubkey);
       const wrapped = wrapDocumentKey(docKey, recipientPk, ownerKp);
-      const commitment = computeOwnerCommitment(recipientPk);
+      const recipientCommitment = computeOwnerCommitment(recipientPk);
 
       const contract = createDocumentManager(seed);
       await contract.connect();
       await contract.waitForSync();
-      const info = contract.loadDeploymentInfo();
+      const info = loadDeploymentInfo();
       if (!info) { await contract.close(); process.exit(1); }
       await contract.connectToDeployed(info.contractAddress);
       const ser = serializeWrappedKey(wrapped);
-      await contract.grantAccess(new Uint8Array(Buffer.from(docId, "hex")), new Uint8Array(commitment), ser.encryptedKey, ser.nonce, ser.senderPublicKey);
+      await contract.grantAccess(
+        new Uint8Array(Buffer.from(docId, "hex")),
+        new Uint8Array(recipientCommitment),
+        ser.encryptedKey,
+        ser.nonce,
+        ser.senderPublicKey,
+      );
       await contract.close();
       console.log(chalk.green("\n✅ Access granted!\n"));
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
 
 share.command("revoke")
-  .description("Revoke access")
+  .description("Revoke a user's access to a document")
   .argument("<doc-id>", "Document ID")
-  .argument("<pubkey>", "Recipient public key (hex)")
-  .argument("<seed>", "Wallet mnemonic phrase")
+  .argument("<pubkey>", "Recipient X25519 public key (hex)")
+  .argument("<seed>", "Your wallet mnemonic phrase")
   .action(async (docId: string, pubkey: string, seed: string) => {
     try {
-      const commitment = computeOwnerCommitment(parsePublicKeyHex(pubkey));
+      const recipientPk = parsePublicKeyHex(pubkey);
+      const recipientCommitment = computeOwnerCommitment(recipientPk);
+      const docIdBytes = new Uint8Array(Buffer.from(docId, "hex"));
+
+      const info = loadDeploymentInfo();
+      if (!info) { console.error(chalk.red("❌ Not deployed")); process.exit(1); }
+
+      // Pre-check that the grant exists. Revoking an already-revoked grant
+      // causes a cryptic node-level failure rather than a contract assertion.
+      const readContract = new DocumentManagerContract("");
+      await readContract.initForRead(info.contractAddress);
+      if (!await readContract.readAccessGrant(docIdBytes, new Uint8Array(recipientCommitment))) {
+        console.error(chalk.red("❌ No active grant found for this keypair — already revoked?"));
+        process.exit(1);
+      }
+
       const contract = createDocumentManager(seed);
       await contract.connect();
       await contract.waitForSync();
-      const info = contract.loadDeploymentInfo();
-      if (!info) { await contract.close(); process.exit(1); }
       await contract.connectToDeployed(info.contractAddress);
-      await contract.revokeAccess(new Uint8Array(Buffer.from(docId, "hex")), new Uint8Array(commitment));
+      await contract.revokeAccess(docIdBytes, new Uint8Array(recipientCommitment));
       await contract.close();
       console.log(chalk.yellow("\n✅ Access revoked!\n"));
+      console.log(chalk.gray("The recipient can no longer fetch the document key from the chain."));
+      console.log(chalk.gray("Note: any copy they already decrypted and saved remains on their machine.\n"));
     } catch (e) { console.error(chalk.red("❌"), e); process.exit(1); }
   });
 
-// List
+// ── List ──────────────────────────────────────────────────────────────────────
 
 program.command("list")
-  .description("List local documents")
+  .description("List all documents registered from this machine")
   .action(() => {
     const files = fs.readdirSync(".").filter(f => f.endsWith(".doc.json"));
     if (files.length === 0) { console.log(chalk.gray("\nNo documents. Use 'upload' first.\n")); return; }
