@@ -1,8 +1,5 @@
 # Dependencies
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
 # Build output
 dist/
@@ -11,15 +8,22 @@ build/
 # Environment variables
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
 
 # Contract artifacts
 contracts/managed/
 
 # Deployment info
 deployment.json
+
+# Private state databases
+midnight-level-db*/
+
+# Document metadata files (contain encryption key material — keep locally, do not commit)
+*.doc.json
+
+# Keypair files (contain private keys — keep locally, do not commit)
+*.midnight-doc-keys.json
+*-keys.json
 
 # OS generated files
 .DS_Store
@@ -35,18 +39,5 @@ Thumbs.db
 logs/
 *.log
 
-# Runtime data
-pids/
-*.pid
-*.seed
-*.pid.lock
-
-# Coverage directory
-coverage/
-
-# Private state
-*-state/
-
 # Temporary files
-tmp/
-temp/
+*.tmp

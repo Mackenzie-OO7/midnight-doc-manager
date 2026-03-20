@@ -1,391 +1,278 @@
-/**
- * Document Manager Contract API
- * 
- * Circuit calls execute locally with clear logging.
- * 
- * NOTE: Full on-chain circuit execution is blocked by SDK/network version mismatch:
- * - SDK ledger-v6 expects 'midnight:contract-state[v6]:' format
- * - Local indexer returns 'midnight:contract-state[v4]:' format
- * 
- * When network versions align, switch to findDeployedContract() for full on-chain ops.
- */
-import "dotenv/config";
-import * as bip39 from 'bip39';
-import * as rx from 'rxjs';
+import 'dotenv/config';
+import * as Rx from 'rxjs';
 import * as path from 'path';
 import { pathToFileURL } from 'node:url';
 import * as fs from 'fs';
 import { createHash } from 'crypto';
-import * as ledger from '@midnight-ntwrk/ledger-v6';
-import { WebSocket } from "ws";
-import { initWalletWithSeed, NETWORK_ID, type WalletContext } from "../utils/wallet.js";
-import { MidnightBech32m } from '@midnight-ntwrk/wallet-sdk-address-format';
-import { EnvironmentManager } from "../utils/environment.js";
+import { WebSocket } from 'ws';
+import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
+import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import {
-    createInitialPrivateState,
-    type DocumentManagerPrivateState,
-} from "./witnesses.js";
+  initWalletWithSeed,
+  mnemonicToSeed,
+  getShieldedAddress,
+} from '../utils/wallet.js';
+import { EnvironmentManager } from '../utils/environment.js';
+import { configureProviders } from '../providers/midnight-providers.js';
+import {
+  createWitnesses,
+  createInitialPrivateState,
+  computeOwnerCommitment,
+  type DocumentManagerPrivateState,
+} from './witnesses.js';
 
-// @ts-ignore
+// @ts-expect-error: enable WebSocket for GraphQL subscriptions in Node
 globalThis.WebSocket = WebSocket;
 
-const CONTRACT_NAME = "document-manager";
+const CONTRACT_NAME = 'document-manager';
+const CONTRACT_TAG = 'document-manager';
+const PRIVATE_STATE_ID = 'doc-manager-private-state';
 
-const VERSION_MISMATCH_WARNING = `
-⚠️  SDK/Network Version Mismatch Detected
-   SDK expects: contract-state[v6]
-   Indexer returns: contract-state[v4]
-   Circuit call will execute locally (not submitted on-chain).
-   To fix: Align network versions or use a compatible testnet.
-`;
-
-/**
- * Deployment info
- */
 export interface DeploymentInfo {
-    contractAddress: string;
-    deployedAt: string;
-    network?: string;
-    contractName?: string;
-    txHash?: string;
+  contractAddress: string;
+  deployedAt: string;
+  network?: string;
+  contractName?: string;
 }
 
-/**
- * Document Manager contract wrapper
- * 
- * Provides:
- * - Wallet connection
- * - IPFS storage
- * - Local circuit execution with clear logging (version mismatch blocks on-chain)
- */
 export class DocumentManagerContract {
-    private contract: any = null;
-    private walletContext: WalletContext | null = null;
-    private secretKey: Uint8Array;
-    private mnemonic: string;
-    private networkConfig: ReturnType<typeof EnvironmentManager.getNetworkConfig>;
-    private walletAddress: string = "";
-    private isConnected: boolean = false;
-    private contractAddress: string = "";
-    private privateState: DocumentManagerPrivateState;
-    private hasShownVersionWarning: boolean = false;
+  private deployedContract: any = null;
+  private walletCtx: Awaited<ReturnType<typeof initWalletWithSeed>> | null = null;
+  private secretKeyBytes: Uint8Array;
+  private mnemonic: string;
+  private walletAddress: string = '';
+  private contractAddress: string = '';
+  private ledgerFn: ((state: any) => any) | null = null;
+  private pureCircuits: any = null;
+  private publicDataProvider: any = null;
 
-    constructor(mnemonic: string) {
-        this.mnemonic = mnemonic;
-        this.secretKey = this.deriveSecretKey(mnemonic);
-        this.privateState = createInitialPrivateState(this.secretKey);
-        this.networkConfig = EnvironmentManager.getNetworkConfig();
+  constructor(mnemonic: string) {
+    this.mnemonic = mnemonic;
+    this.secretKeyBytes = new Uint8Array(32);
+  }
+
+  async connect(): Promise<string> {
+    const seed = await mnemonicToSeed(this.mnemonic);
+
+    // Derive a stable 32-byte key from the mnemonic for on-chain ownership
+    // proofs. Must match what the contract witness returns — not the X25519 key.
+    this.secretKeyBytes = new Uint8Array(
+      createHash('sha256')
+        .update('midnight-doc-manager:owner-key:')
+        .update(seed)
+        .digest(),
+    );
+
+    this.walletCtx = await initWalletWithSeed(seed);
+    await Rx.firstValueFrom(
+      this.walletCtx.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
+    );
+
+    this.walletAddress = getShieldedAddress(this.walletCtx.shieldedSecretKeys);
+    return this.walletAddress;
+  }
+
+  getOwnerCommitment(): Uint8Array {
+    return computeOwnerCommitment(this.secretKeyBytes);
+  }
+
+  async waitForSync(): Promise<void> {
+    if (!this.walletCtx) throw new Error('Not connected. Call connect() first.');
+    await Rx.firstValueFrom(
+      this.walletCtx.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
+    );
+  }
+
+  loadDeploymentInfo(): DeploymentInfo | null {
+    const deploymentPath = path.join(process.cwd(), 'deployment.json');
+    if (!fs.existsSync(deploymentPath)) return null;
+    return JSON.parse(fs.readFileSync(deploymentPath, 'utf-8'));
+  }
+
+  /**
+   * Load the compiled contract module and create an indexer provider without
+   * initializing a wallet. Used for read-only state checks (grant existence
+   * pre-check before revoke) that require no DUST or network sync.
+   */
+  async initForRead(contractAddress: string): Promise<void> {
+    this.contractAddress = contractAddress;
+
+    const contractModulePath = path.join(
+      process.cwd(), 'contracts', 'managed', CONTRACT_NAME, 'contract', 'index.js',
+    );
+    if (!fs.existsSync(contractModulePath)) {
+      throw new Error('Contract not compiled. Run: npm run compile');
     }
 
-    private deriveSecretKey(mnemonic: string): Uint8Array {
-        const seed = bip39.mnemonicToSeedSync(mnemonic).subarray(0, 32);
-        const hash = createHash("sha256")
-            .update(Buffer.from("midnight-doc-manager:owner-key:"))
-            .update(seed)
-            .digest();
-        return new Uint8Array(hash);
+    const { ledger, pureCircuits } = await import(pathToFileURL(contractModulePath).href);
+    this.ledgerFn = ledger;
+    this.pureCircuits = pureCircuits;
+
+    const networkConfig = EnvironmentManager.getNetworkConfig();
+    this.publicDataProvider = indexerPublicDataProvider(networkConfig.indexer, networkConfig.indexerWS);
+  }
+
+  async connectToDeployed(contractAddress: string): Promise<void> {
+    if (!this.walletCtx) throw new Error('Not connected. Call connect() first.');
+
+    this.contractAddress = contractAddress;
+
+    const networkConfig = EnvironmentManager.getNetworkConfig();
+    const providers = await configureProviders(this.walletCtx, networkConfig);
+
+    // Store the provider so readAccessGrant uses the same Apollo client —
+    // guaranteed to reflect the state that findDeployedContract saw.
+    this.publicDataProvider = providers.publicDataProvider;
+
+    const contractModulePath = path.join(
+      process.cwd(), 'contracts', 'managed', CONTRACT_NAME, 'contract', 'index.js',
+    );
+    if (!fs.existsSync(contractModulePath)) {
+      throw new Error('Contract not compiled. Run: npm run compile');
     }
 
-    private showVersionWarning(): void {
-        if (!this.hasShownVersionWarning) {
-            console.log(VERSION_MISMATCH_WARNING);
-            this.hasShownVersionWarning = true;
-        }
+    const zkConfigPath = path.join(process.cwd(), 'contracts', 'managed', CONTRACT_NAME);
+    const { Contract, ledger, pureCircuits } = await import(pathToFileURL(contractModulePath).href);
+
+    this.ledgerFn = ledger;
+    this.pureCircuits = pureCircuits;
+
+    const compiledContract = CompiledContract.make(CONTRACT_TAG, Contract).pipe(
+      CompiledContract.withWitnesses(createWitnesses(this.secretKeyBytes)),
+      CompiledContract.withCompiledFileAssets(zkConfigPath),
+    );
+
+    const initialPrivateState: DocumentManagerPrivateState = createInitialPrivateState(this.secretKeyBytes);
+
+    this.deployedContract = await findDeployedContract(providers as any, {
+      compiledContract: compiledContract as any,
+      contractAddress,
+      privateStateId: PRIVATE_STATE_ID,
+      initialPrivateState,
+    });
+  }
+
+  async registerDocument(
+    documentId: Uint8Array,
+    contentHash: Uint8Array,
+    storageCid: string,
+    ownerCommitment: Uint8Array,
+    fileType: string,
+  ): Promise<string> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    const result = await this.deployedContract.callTx.registerDocument(
+      documentId, contentHash, storageCid, ownerCommitment, fileType,
+    );
+    return result.public.txId as string;
+  }
+
+  async verifyDocument(documentId: Uint8Array, providedHash: Uint8Array): Promise<boolean> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    const result = await this.deployedContract.callTx.verifyDocument(documentId, providedHash);
+    return result.private.result as boolean;
+  }
+
+  async updateDocument(
+    documentId: Uint8Array,
+    newContentHash: Uint8Array,
+    newStorageCid: string,
+  ): Promise<string> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    const result = await this.deployedContract.callTx.updateDocument(
+      documentId, newContentHash, newStorageCid,
+    );
+    return result.public.txId as string;
+  }
+
+  async deactivateDocument(documentId: Uint8Array): Promise<string> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    const result = await this.deployedContract.callTx.deactivateDocument(documentId);
+    return result.public.txId as string;
+  }
+
+  async grantAccess(
+    documentId: Uint8Array,
+    recipientCommitment: Uint8Array,
+    encryptedKey: string,
+    nonce: string,
+    senderPublicKey: string,
+  ): Promise<string> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    const result = await this.deployedContract.callTx.grantAccess(
+      documentId, recipientCommitment, encryptedKey, nonce, senderPublicKey,
+    );
+    return result.public.txId as string;
+  }
+
+  async revokeAccess(documentId: Uint8Array, recipientCommitment: Uint8Array): Promise<string> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    const result = await this.deployedContract.callTx.revokeAccess(documentId, recipientCommitment);
+    return result.public.txId as string;
+  }
+
+  async hasAccess(documentId: Uint8Array, recipientCommitment: Uint8Array): Promise<boolean> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    const result = await this.deployedContract.callTx.hasAccess(documentId, recipientCommitment);
+    return result.private.result as boolean;
+  }
+
+  /**
+   * Read an access grant directly from the indexer — no DUST or callTx required.
+   * Works after initForRead() or connectToDeployed(). Re-calling connectToDeployed()
+   * before each read ensures the state reflects the latest indexed block.
+   */
+  async readAccessGrant(
+    documentId: Uint8Array,
+    recipientCommitment: Uint8Array,
+  ): Promise<{ encryptedKey: string; nonce: string; senderPublicKey: string } | null> {
+    if (!this.publicDataProvider || !this.ledgerFn || !this.pureCircuits) {
+      throw new Error('Contract not initialized. Call initForRead() or connectToDeployed() first.');
     }
 
-    /**
-     * Initialize and connect to the network with full wallet
-     */
-    async connect(): Promise<string> {
-        if (!bip39.validateMnemonic(this.mnemonic)) {
-            throw new Error("Invalid mnemonic");
-        }
+    const contractState = await this.publicDataProvider.queryContractState(this.contractAddress as any);
+    if (!contractState) return null;
 
-        const seed = bip39.mnemonicToSeedSync(this.mnemonic).subarray(0, 32);
+    // queryContractState returns a ContractState — ledger() expects its .data (ChargedState)
+    const ledgerState = this.ledgerFn((contractState as any).data);
+    const grantKey = this.pureCircuits.computeGrantKey(documentId, recipientCommitment);
 
-        this.walletContext = await initWalletWithSeed(seed);
+    if (!ledgerState.accessGrants.member(grantKey)) return null;
+    return ledgerState.accessGrants.lookup(grantKey) as {
+      encryptedKey: string;
+      nonce: string;
+      senderPublicKey: string;
+    };
+  }
 
-        // Wait for sync
-        await rx.firstValueFrom(
-            this.walletContext.wallet.state().pipe(rx.filter((s) => s.isSynced))
-        );
-
-        const state = await rx.firstValueFrom(this.walletContext.wallet.state());
-        this.walletAddress = MidnightBech32m.encode('undeployed', state.shielded.address).toString();
-        this.isConnected = true;
-
-        return this.walletAddress;
+  async getDocument(documentId: Uint8Array): Promise<{
+    contentHash: Uint8Array;
+    storageCid: string;
+    ownerCommitment: Uint8Array;
+    fileType: string;
+    isActive: boolean;
+  } | null> {
+    if (!this.deployedContract) throw new Error('Contract not connected');
+    try {
+      const result = await this.deployedContract.callTx.getDocument(documentId);
+      return result.private.result as any;
+    } catch {
+      return null;
     }
+  }
 
-    /**
-     * Get wallet balance
-     */
-    async getBalance(): Promise<bigint> {
-        if (!this.walletContext) throw new Error("Not connected");
-
-        const state = await rx.firstValueFrom(this.walletContext.wallet.state());
-        const SHIELDED_NATIVE_RAW = ledger.shieldedToken().raw;
-        return state.shielded.balances[SHIELDED_NATIVE_RAW] ?? 0n;
-    }
-
-    async waitForSync(): Promise<void> {
-        if (!this.walletContext) throw new Error("Not connected");
-        await rx.firstValueFrom(
-            this.walletContext.wallet.state().pipe(rx.filter((s) => s.isSynced))
-        );
-    }
-
-    loadDeploymentInfo(): DeploymentInfo | null {
-        const deploymentPath = path.join(process.cwd(), "deployment.json");
-        if (!fs.existsSync(deploymentPath)) return null;
-        return JSON.parse(fs.readFileSync(deploymentPath, "utf-8"));
-    }
-
-    /**
-     * Connect to deployed contract
-     */
-    async connectToDeployed(contractAddress: string): Promise<void> {
-        if (!this.isConnected || !this.walletContext) {
-            throw new Error("Not connected. Call connect() first.");
-        }
-
-        this.contractAddress = contractAddress;
-
-        const contractModulePath = path.join(
-            process.cwd(), "contracts", "managed", CONTRACT_NAME, "contract", "index.js"
-        );
-
-        try {
-            const ContractModule = await import(pathToFileURL(contractModulePath).href);
-
-            const secretKeyBytes = this.walletContext.shieldedSecretKeys
-                .coinSecretKey.yesIKnowTheSecurityImplicationsOfThis_serialize();
-
-            this.contract = new ContractModule.Contract({
-                secretKey: (witnessContext: any) => [witnessContext.privateState, secretKeyBytes],
-            });
-
-            console.log("Contract loaded (hybrid mode - IPFS storage enabled)");
-        } catch (error) {
-            console.error("Failed to load contract:", error);
-            throw error;
-        }
-    }
-
-    // Contract Methods
-
-    /**
-     * Register a document
-     */
-    async registerDocument(
-        documentId: Uint8Array,
-        contentHash: Uint8Array,
-        storageCid: string,
-        ownerCommitment: Uint8Array,
-        fileType: string
-    ): Promise<string> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        const docIdHex = Buffer.from(documentId).toString('hex').slice(0, 16);
-
-        this.showVersionWarning();
-
-        // Log the transaction that would be submitted
-        console.log(`📋 Transaction Intent: registerDocument`);
-        console.log(`   Document ID: ${docIdHex}...`);
-        console.log(`   Content Hash: ${Buffer.from(contentHash).toString('hex').slice(0, 16)}...`);
-        console.log(`   Storage CID: ${storageCid.slice(0, 30)}...`);
-        console.log(`   Owner Commit: ${Buffer.from(ownerCommitment).toString('hex').slice(0, 16)}...`);
-        console.log(`   File Type: ${fileType}`);
-        console.log(`   Contract: ${this.contractAddress.slice(0, 16)}...`);
-
-        // Generate a mock tx ID for tracking
-        const mockTxId = createHash('sha256')
-            .update(documentId)
-            .update(Buffer.from(Date.now().toString()))
-            .digest('hex');
-
-        console.log(`\n✓ Document stored on IPFS: ${storageCid}`);
-        console.log(`  (On-chain registration pending network version alignment)`);
-
-        return mockTxId;
-    }
-
-    /**
-     * Verify document hash matches
-     */
-    async verifyDocument(documentId: Uint8Array, providedHash: Uint8Array): Promise<boolean> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        // Local verification - hash comparison
-        const docIdHex = Buffer.from(documentId).toString('hex').slice(0, 16);
-        console.log(`🔍 Verifying document: ${docIdHex}...`);
-
-        // Since we can't query on-chain state, return true to allow download
-        // The actual verification happens via content hash comparison
-        return true;
-    }
-
-    /**
-     * Update document
-     */
-    async updateDocument(
-        documentId: Uint8Array,
-        newContentHash: Uint8Array,
-        newStorageCid: string
-    ): Promise<string> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        const docIdHex = Buffer.from(documentId).toString('hex').slice(0, 16);
-        this.showVersionWarning();
-
-        console.log(`📋 Transaction Intent: updateDocument`);
-        console.log(`   Document ID: ${docIdHex}...`);
-        console.log(`   New Hash: ${Buffer.from(newContentHash).toString('hex').slice(0, 16)}...`);
-        console.log(`   New CID: ${newStorageCid.slice(0, 30)}...`);
-
-        const mockTxId = createHash('sha256')
-            .update(documentId)
-            .update(Buffer.from(Date.now().toString()))
-            .digest('hex');
-
-        console.log(`\n✓ Document updated on IPFS: ${newStorageCid}`);
-        console.log(`  (On-chain update pending network version alignment)`);
-
-        return mockTxId;
-    }
-
-    /**
-     * Deactivate document
-     */
-    async deactivateDocument(documentId: Uint8Array): Promise<string> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        const docIdHex = Buffer.from(documentId).toString('hex').slice(0, 16);
-        this.showVersionWarning();
-
-        console.log(`📋 Transaction Intent: deactivateDocument`);
-        console.log(`   Document ID: ${docIdHex}...`);
-
-        const mockTxId = createHash('sha256')
-            .update(documentId)
-            .update(Buffer.from(Date.now().toString()))
-            .digest('hex');
-
-        console.log(`✓ Deactivation logged (on-chain pending)`);
-        return mockTxId;
-    }
-
-    /**
-     * Grant access
-     */
-    async grantAccess(
-        documentId: Uint8Array,
-        recipientCommitment: Uint8Array,
-        encryptedKey: string,
-        nonce: string,
-        senderPublicKey: string
-    ): Promise<string> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        const docIdHex = Buffer.from(documentId).toString('hex').slice(0, 16);
-        const recipientHex = Buffer.from(recipientCommitment).toString('hex').slice(0, 16);
-        this.showVersionWarning();
-
-        console.log(`📋 Transaction Intent: grantAccess`);
-        console.log(`   Document: ${docIdHex}...`);
-        console.log(`   Recipient: ${recipientHex}...`);
-
-        const mockTxId = createHash('sha256')
-            .update(documentId)
-            .update(recipientCommitment)
-            .update(Buffer.from(Date.now().toString()))
-            .digest('hex');
-
-        console.log(`✓ Access grant logged (on-chain pending)`);
-        return mockTxId;
-    }
-
-    /**
-     * Revoke access
-     */
-    async revokeAccess(
-        documentId: Uint8Array,
-        recipientCommitment: Uint8Array
-    ): Promise<string> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        const docIdHex = Buffer.from(documentId).toString('hex').slice(0, 16);
-        const recipientHex = Buffer.from(recipientCommitment).toString('hex').slice(0, 16);
-        this.showVersionWarning();
-
-        console.log(`📋 Transaction Intent: revokeAccess`);
-        console.log(`   Document: ${docIdHex}...`);
-        console.log(`   Recipient: ${recipientHex}...`);
-
-        const mockTxId = createHash('sha256')
-            .update(documentId)
-            .update(recipientCommitment)
-            .update(Buffer.from(Date.now().toString()))
-            .digest('hex');
-
-        console.log(`✓ Access revoke logged (on-chain pending)`);
-        return mockTxId;
-    }
-
-    /**
-     * Check if user has access
-     */
-    async hasAccess(documentId: Uint8Array, recipientCommitment: Uint8Array): Promise<boolean> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        // Since we can't query on-chain state, we check local key storage
-        // The CLI handles key management via .midnight-doc-keys.json
-        return true;
-    }
-
-    /**
-     * Get access grant info
-     */
-    async getAccessGrant(documentId: Uint8Array, recipientCommitment: Uint8Array): Promise<any> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        // Return null - access grants are managed locally due to version mismatch
-        return null;
-    }
-
-    /**
-     * Get document info
-     */
-    async getDocument(documentId: Uint8Array): Promise<any> {
-        if (!this.contract) throw new Error("Contract not connected");
-
-        // Return null - document state queries require indexer (version mismatch)
-        return null;
-    }
-
-    /**
-     * Close connection
-     */
-    async close(): Promise<void> {
-        if (this.walletContext) {
-            await this.walletContext.wallet.stop();
-        }
-        this.isConnected = false;
-        this.contract = null;
-        this.walletContext = null;
-    }
+  async close(): Promise<void> {
+    if (this.walletCtx) await this.walletCtx.wallet.stop();
+    this.deployedContract = null;
+    this.walletCtx = null;
+    this.publicDataProvider = null;
+  }
 }
 
-/**
- * Create a contract instance
- * @param mnemonic - Optional mnemonic phrase. If not provided, uses WALLET_SEED from environment.
- */
 export function createDocumentManager(mnemonic?: string): DocumentManagerContract {
-    const walletSeed = mnemonic || process.env.WALLET_SEED;
-    if (!walletSeed) {
-        throw new Error("Mnemonic not provided and WALLET_SEED not set in environment");
-    }
-    return new DocumentManagerContract(walletSeed);
+  const phrase = mnemonic || process.env.WALLET_MNEMONIC;
+  if (!phrase) {
+    throw new Error('Mnemonic not provided and WALLET_MNEMONIC not set in environment');
+  }
+  return new DocumentManagerContract(phrase);
 }
-

@@ -1,157 +1,89 @@
 #!/usr/bin/env tsx
 /**
- * Generate dust from unshielded tokens
- * 
- * Dust is NOT transferred - it's generated from registering unshielded UTXOs.
- * This script registers your unshielded coins for dust generation.
+ * Generate dust from unshielded tokens. For preprod use only —
+ * midnight-local-dev handles dust registration automatically on local.
+ *
+ * Usage: npm run generate-dust "your mnemonic words"
  */
 import 'dotenv/config';
-import * as bip39 from 'bip39';
-import * as rx from 'rxjs';
+import * as Rx from 'rxjs';
 import chalk from 'chalk';
-import { initWalletWithSeed } from './utils/wallet.js';
-import { MidnightBech32m } from '@midnight-ntwrk/wallet-sdk-address-format';
+import { initWalletWithSeed, mnemonicToSeed, getDustBalance, NETWORK_ID, registerForDustGeneration } from './utils/wallet.js';
+import { nativeToken } from '@midnight-ntwrk/ledger-v7';
 
 async function main() {
-    const mnemonic = process.argv.slice(2).join(' ').trim();
+  const mnemonic = process.argv.slice(2).join(' ').trim();
 
-    if (!mnemonic || !bip39.validateMnemonic(mnemonic)) {
-        console.log(chalk.red('Usage: npm run generate-dust "your mnemonic words..."'));
-        process.exit(1);
+  if (!mnemonic) {
+    console.log(chalk.red('Usage: npm run generate-dust "your mnemonic words..."'));
+    process.exit(1);
+  }
+
+  console.log(chalk.cyan.bold('\n' + '='.repeat(57)));
+  console.log(chalk.cyan.bold('  Generating Dust from Unshielded Tokens'));
+  console.log(chalk.cyan.bold('='.repeat(57) + '\n'));
+  console.log(chalk.gray(`Network: ${NETWORK_ID}`));
+  console.log();
+
+  console.log(chalk.yellow('1. Initializing wallet...'));
+  const seed = await mnemonicToSeed(mnemonic);
+  const walletCtx = await initWalletWithSeed(seed);
+
+  try {
+    console.log(chalk.yellow('2. Waiting for sync...'));
+    const state = await Rx.firstValueFrom(
+      walletCtx.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
+    );
+    console.log(chalk.green('   Synced\n'));
+
+    const unshieldedBalance: bigint = state.unshielded?.balances?.[nativeToken().raw] ?? 0n;
+    const dustBalance = getDustBalance(state);
+
+    console.log(chalk.white('Unshielded balance: ') +
+      (unshieldedBalance > 0n ? chalk.green(unshieldedBalance.toString()) : chalk.red('0')));
+    console.log(chalk.white('Dust balance:       ') +
+      (dustBalance > 0n ? chalk.green(dustBalance.toString()) : chalk.red('0')));
+    console.log();
+
+    if (dustBalance > 0n) {
+      console.log(chalk.green('You already have dust. Ready to deploy.'));
+      return;
     }
 
-    console.log(chalk.cyan.bold('\n═══════════════════════════════════════════════════════'));
-    console.log(chalk.cyan.bold('  Generating Dust from Unshielded Tokens'));
-    console.log(chalk.cyan.bold('═══════════════════════════════════════════════════════\n'));
-
-    const seed = bip39.mnemonicToSeedSync(mnemonic).subarray(0, 32);
-
-    console.log(chalk.yellow('1. Initializing wallet...'));
-    const { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore } = await initWalletWithSeed(seed);
-
-    try {
-        console.log(chalk.yellow('2. Waiting for sync...'));
-        await rx.firstValueFrom(wallet.state().pipe(rx.filter((s) => s.isSynced)));
-        let state = await rx.firstValueFrom(wallet.state());
-        console.log(chalk.green('   ✓ Synced\n'));
-
-        // Check balances
-        console.log(chalk.cyan('─── Current State ───'));
-        const dustCoins = state.dust.totalCoins;
-        const unshieldedCoins = state.unshielded.totalCoins;
-
-        console.log(chalk.white('Dust coins:       ') +
-            (dustCoins.length > 0 ? chalk.green(dustCoins.length.toString()) : chalk.red('0')));
-        console.log(chalk.white('Unshielded UTXOs: ') +
-            (unshieldedCoins.length > 0 ? chalk.green(unshieldedCoins.length.toString()) : chalk.red('0')));
-        console.log(chalk.white('Dust address:     ') + chalk.gray(state.dust.dustAddress));
-        console.log();
-
-        if (dustCoins.length > 0) {
-            console.log(chalk.green('✓ You already have dust! Ready to deploy.'));
-            await wallet.stop();
-            return;
-        }
-
-        if (unshieldedCoins.length === 0) {
-            console.log(chalk.red('✗ No unshielded tokens to convert to dust.'));
-            console.log(chalk.yellow('  Run: npm run fund "your mnemonic"'));
-            await wallet.stop();
-            process.exit(1);
-        }
-
-        // Register for dust generation
-        console.log(chalk.yellow('3. Registering unshielded coins for dust generation...'));
-
-        const availableCoins = state.unshielded.availableCoins;
-        console.log(chalk.gray(`   Found ${availableCoins.length} available unshielded coins`));
-
-        // Get the verifying key from the keystore
-        const verifyingKey = unshieldedKeystore.getPublicKey();
-
-        // Create the signing function
-        const signDustRegistration = (payload: Uint8Array) => {
-            return unshieldedKeystore.signData(payload);
-        };
-
-        try {
-            // Register the UTXOs for dust generation
-            const recipe = await wallet.registerNightUtxosForDustGeneration(
-                availableCoins,
-                verifyingKey,
-                signDustRegistration,
-                state.dust.dustAddress
-            );
-
-            console.log(chalk.yellow('4. Finalizing transaction...'));
-            const finalizedTx = await wallet.finalizeTransaction(recipe);
-
-            console.log(chalk.yellow('5. Submitting transaction...'));
-            const txHash = await wallet.submitTransaction(finalizedTx);
-
-            console.log(chalk.green.bold('\n✓ Dust generation registered!'));
-            console.log(chalk.white('Transaction: ') + chalk.gray(txHash));
-            console.log();
-            console.log(chalk.yellow('⏳ Dust will accumulate over time. Wait a few seconds, then try deploying.'));
-
-        } catch (err: any) {
-            console.log(chalk.red('\n✗ Registration failed:'), err.message);
-
-            if (err.message?.includes('139')) {
-                console.log(chalk.yellow('\nError 139 usually means the transaction structure is invalid.'));
-                console.log(chalk.gray('This might be a network/SDK version mismatch.'));
-            }
-
-            // Alternative: Try using the low-level dust wallet API
-            console.log(chalk.yellow('\n→ Trying alternative approach via dust wallet directly...'));
-
-            const ttl = new Date(Date.now() + 60 * 60 * 1000);
-            const dustWallet = wallet.dust;
-
-            // Get coins in the format dust wallet expects
-            const coinsForDust = availableCoins.map(coin => ({
-                ...coin.utxo,
-                ctime: coin.meta.ctime
-            }));
-
-            const unprovenTx = await dustWallet.createDustGenerationTransaction(
-                undefined,  // currentTime
-                ttl,
-                coinsForDust,
-                verifyingKey,
-                state.dust.dustAddress
-            );
-
-            // Get the intent and sign it
-            const intent = unprovenTx.intents?.get(1);
-            if (!intent) {
-                throw new Error('Dust generation transaction missing intent segment 1');
-            }
-
-            const signatureData = intent.signatureData(1);
-            const signature = signDustRegistration(signatureData);
-
-            const provingRecipe = await dustWallet.addDustGenerationSignature(unprovenTx, signature);
-
-            if (provingRecipe.type !== 'TransactionToProve') {
-                throw new Error('Unexpected recipe type: ' + provingRecipe.type);
-            }
-
-            const finalized = await dustWallet.finalizeTransaction(provingRecipe);
-            const txHash2 = await wallet.submitTransaction(finalized);
-
-            console.log(chalk.green.bold('\n✓ Dust generation registered (alternative method)!'));
-            console.log(chalk.white('Transaction: ') + chalk.gray(txHash2));
-        }
-
-    } catch (e: any) {
-        console.log(chalk.red('\n❌ Error:'), e.message || e);
-        console.error(e);
-    } finally {
-        await wallet.stop();
+    if (unshieldedBalance === 0n) {
+      console.log(chalk.red('No unshielded tokens found. Fund this wallet first.'));
+      process.exit(1);
     }
 
-    console.log(chalk.cyan.bold('\n═══════════════════════════════════════════════════════\n'));
+    console.log(chalk.yellow('3. Registering UTXOs for dust generation...'));
+    await registerForDustGeneration(walletCtx);
+    console.log(chalk.green('   Registration submitted'));
+    console.log();
+
+    console.log(chalk.yellow('Waiting for dust to appear (up to 60 seconds)...'));
+    const dustState = await Rx.firstValueFrom(
+      walletCtx.wallet.state().pipe(
+        Rx.filter((s) => getDustBalance(s) > 0n),
+        Rx.timeout(60_000),
+      ),
+    );
+
+    const finalDust = getDustBalance(dustState);
+    console.log(chalk.green.bold(`\nDust balance: ${finalDust}`));
+    console.log(chalk.green('Ready to deploy.'));
+
+  } catch (e: any) {
+    if (e?.name === 'TimeoutError') {
+      console.log(chalk.yellow('\nDust not yet visible - it may take a few more blocks.'));
+      console.log(chalk.gray('Try running deploy in a moment.'));
+    } else {
+      console.error(chalk.red('\nError:'), e?.message ?? e);
+    }
+  } finally {
+    await walletCtx.wallet.stop();
+  }
+
+  console.log(chalk.cyan.bold('\n' + '='.repeat(57) + '\n'));
 }
 
 main().catch(console.error);
